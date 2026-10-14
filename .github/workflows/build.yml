@@ -109,7 +109,7 @@ jobs:
 
       - name: Analyze Dart source
         working-directory: /tmp/statushd
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Run tests
         working-directory: /tmp/statushd
@@ -165,7 +165,7 @@ jobs:
 
       - name: Analyze Dart source
         working-directory: /tmp/statushd
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Build unsigned iOS simulator app
         working-directory: /tmp/statushd

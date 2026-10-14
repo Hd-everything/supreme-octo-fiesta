@@ -999,6 +999,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                 ),
               ],
             ),
+          ],
           );
         },
       ),
