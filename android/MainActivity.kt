@@ -5,8 +5,6 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
@@ -14,6 +12,7 @@ import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
 import androidx.media3.effect.Effects
 import androidx.media3.effect.HslAdjustment
+import androidx.media3.effect.LanczosResample
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.ExportException
@@ -75,6 +74,7 @@ class MainActivity : FlutterActivity() {
                     Brightness(brightness),
                     Contrast(contrast),
                     HslAdjustment.Builder().adjustSaturation(saturation).adjustLightness(2f).build(),
+                    LanczosResample.scaleToFit(outputWidth, outputHeight),
                     Presentation.createForWidthAndHeight(
                         outputWidth,
                         outputHeight,
