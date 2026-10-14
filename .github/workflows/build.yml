@@ -1,0 +1,180 @@
+name: Build Status HD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: status-hd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner disk space
+        run: |
+          set -euxo pipefail
+          df -h /
+          # Remove preinstalled toolchains and Android emulator images not used by this build.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/powershell
+          sudo rm -rf "${ANDROID_HOME}/system-images" "${ANDROID_HOME}/emulator"
+          # The build installs and uses one pinned NDK version below.
+          sudo rm -rf "${ANDROID_HOME}/ndk"
+          df -h /
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android platform project
+        run: flutter create --platforms=android --org com.ptip --project-name statushd /tmp/statushd
+
+      - name: Set Android compile SDK for current plugins
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          gradle = Path("/tmp/statushd/android/app/build.gradle.kts")
+          if gradle.exists():
+              source = gradle.read_text()
+              updated, count = re.subn(r"compileSdk\s*=\s*flutter\.compileSdkVersion", "compileSdk = 36", source, count=1)
+              if count == 0:
+                  updated, count = re.subn(r"compileSdk\s*=\s*\d+", "compileSdk = 36", source, count=1)
+              if count == 0:
+                  raise SystemExit("Could not set compileSdk in generated Kotlin Gradle file")
+              gradle.write_text(updated)
+          else:
+              gradle = Path("/tmp/statushd/android/app/build.gradle")
+              source = gradle.read_text()
+              updated, count = re.subn(r"compileSdkVersion\s+flutter\.compileSdkVersion", "compileSdkVersion 36", source, count=1)
+              if count == 0:
+                  updated, count = re.subn(r"compileSdkVersion\s+\d+", "compileSdkVersion 36", source, count=1)
+              if count == 0:
+                  raise SystemExit("Could not set compileSdk in generated Gradle file")
+              gradle.write_text(updated)
+          PY
+
+      - name: Install Android NDK with retry
+        run: |
+          set -euo pipefail
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          NDK_VERSION="28.2.13676358"
+          for attempt in 1 2 3; do
+            echo "Installing Android NDK ${NDK_VERSION} (attempt ${attempt}/3)"
+            if "${SDKMANAGER}" --install "ndk;${NDK_VERSION}" --sdk_root="${ANDROID_HOME}"; then
+              test -f "${ANDROID_HOME}/ndk/${NDK_VERSION}/source.properties"
+              exit 0
+            fi
+            echo "NDK install failed; removing incomplete package before retry."
+            rm -rf "${ANDROID_HOME}/ndk/${NDK_VERSION}"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Android NDK installation failed after 3 attempts."
+          exit 1
+
+      - name: Copy app source into generated project
+        run: |
+          rm -rf /tmp/statushd/lib /tmp/statushd/test
+          cp -R lib test /tmp/statushd/
+          cp pubspec.yaml analysis_options.yaml /tmp/statushd/
+          mkdir -p /tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd
+          cp android/MainActivity.kt /tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd/MainActivity.kt
+
+      - name: Resolve dependencies
+        working-directory: /tmp/statushd
+        run: flutter pub get
+
+      - name: Analyze Dart source
+        working-directory: /tmp/statushd
+        run: flutter analyze
+
+      - name: Run tests
+        working-directory: /tmp/statushd
+        run: flutter test
+
+      - name: Build debug APK
+        working-directory: /tmp/statushd
+        run: flutter build apk --debug
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: statushd-android-debug
+          path: /tmp/statushd/build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7
+
+  ios-simulator:
+    name: iOS simulator build (unsigned)
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate iOS platform project
+        run: flutter create --platforms=ios --org com.ptip --project-name statushd /tmp/statushd
+
+      - name: Copy app source into generated project
+        run: |
+          rm -rf /tmp/statushd/lib /tmp/statushd/test
+          cp -R lib test /tmp/statushd/
+          cp pubspec.yaml analysis_options.yaml /tmp/statushd/
+          cp ios/AppDelegate.swift /tmp/statushd/ios/Runner/AppDelegate.swift
+
+      - name: Add photo-library purpose text
+        run: |
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'Status HD selects media you choose to prepare and share.'" /tmp/statushd/ios/Runner/Info.plist || true
+
+      - name: Resolve dependencies
+        working-directory: /tmp/statushd
+        run: flutter pub get
+
+      - name: Analyze Dart source
+        working-directory: /tmp/statushd
+        run: flutter analyze
+
+      - name: Build unsigned iOS simulator app
+        working-directory: /tmp/statushd
+        run: flutter build ios --simulator --no-codesign
+
+      - name: Upload iOS simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: statushd-ios-simulator-unsigned
+          path: /tmp/statushd/build/ios/iphonesimulator/Runner.app
+          if-no-files-found: error
+          retention-days: 7
