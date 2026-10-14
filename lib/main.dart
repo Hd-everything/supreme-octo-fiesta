@@ -894,16 +894,21 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   IconButton(
+                    tooltip: 'Open movie player',
+                    onPressed: _openMoviePlayer,
+                    icon: const Icon(Icons.movie_outlined),
+                  ),
+                  IconButton(
                     tooltip: 'Media tools',
                     onPressed: () => setState(() => _tab = 1),
-                    icon: const Icon(Icons.palette_outlined),
+                    icon: const Icon(Icons.tune_rounded),
                   ),
                 ],
               ),
               const SizedBox(height: 28),
               Text('Make your status\nlook its best.', style: TextStyle(fontSize: widget.compact ? 30 : 36, height: 1.04, fontWeight: FontWeight.w800, letterSpacing: -1.25)),
               const SizedBox(height: 12),
-              const Text('Choose a clip, upscale and re-encode for a cleaner WhatsApp upload, then save or share. Your original always stays untouched.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
+              const Text('Choose a photo or video, adjust brightness, contrast and color, then process and share a new copy. The source file stays untouched.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
               const SizedBox(height: 18),
               Wrap(
                 spacing: 8,
@@ -920,9 +925,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 borderRadius: BorderRadius.circular(widget.rounded ? 24 : 12),
                 clipBehavior: Clip.antiAlias,
                 child: InkWell(
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const MoviePlayerScreen()),
-                  ),
+                  onTap: _openMoviePlayer,
                   child: Ink(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
