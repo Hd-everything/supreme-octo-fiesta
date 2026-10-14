@@ -580,6 +580,38 @@ class _HomeScreenState extends State<HomeScreen> {
     return '${minutes.toString().padLeft(2, '0')}:${remaining.toString().padLeft(2, '0')}';
   }
 
+  Widget _adjustmentSlider({
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required int divisions,
+    required String display,
+    required ValueChanged<double> onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700))),
+              Text(display, style: TextStyle(fontSize: 11, color: widget.accent, fontWeight: FontWeight.w700)),
+            ],
+          ),
+          Slider(
+            min: min,
+            max: max,
+            divisions: divisions,
+            value: value.clamp(min, max).toDouble(),
+            onChanged: _exporting ? null : onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _qualityInfo(Color accent) {
     final resolution = _sourceResolution;
     if (resolution == null || _qualityRecommendation == null) return const SizedBox.shrink();
@@ -616,6 +648,34 @@ class _HomeScreenState extends State<HomeScreen> {
           selected: {_targetLongEdge},
           onSelectionChanged: _exporting ? null : (values) => setState(() { _targetLongEdge = values.first; _enhancedVideo = null; _exportEstimateMessage = _estimateExportSize(); }),
           showSelectedIcon: false,
+        ),
+        const SizedBox(height: 12),
+        _adjustmentSlider(
+          label: 'Brightness',
+          value: _brightnessBoost,
+          min: -0.10,
+          max: 0.20,
+          divisions: 30,
+          display: '${(_brightnessBoost * 100).round()}%',
+          onChanged: (value) => setState(() { _brightnessBoost = value; _enhancedVideo = null; }),
+        ),
+        _adjustmentSlider(
+          label: 'Contrast',
+          value: _contrastBoost,
+          min: -0.20,
+          max: 0.30,
+          divisions: 25,
+          display: '${(_contrastBoost * 100).round()}%',
+          onChanged: (value) => setState(() { _contrastBoost = value; _enhancedVideo = null; }),
+        ),
+        _adjustmentSlider(
+          label: 'Color',
+          value: _saturationBoost,
+          min: -20,
+          max: 30,
+          divisions: 25,
+          display: '${_saturationBoost.round()}',
+          onChanged: (value) => setState(() { _saturationBoost = value; _enhancedVideo = null; }),
         ),
         const SizedBox(height: 10),
         if (_exporting) ...[
