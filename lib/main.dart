@@ -781,7 +781,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       bottomNavigationBar: NavigationBar(
         height: widget.compact ? 62 : 74,
-        selectedIndex: _tab.clamp(0, 1),
+        selectedIndex: _tab,
         onDestinationSelected: (index) => setState(() => _tab = index),
         backgroundColor: Theme.of(context).colorScheme.surface,
         indicatorColor: accent.withValues(alpha: .16),
