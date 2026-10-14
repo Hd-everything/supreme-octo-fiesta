@@ -43,8 +43,12 @@ Building an iOS simulator app does not require App Store signing. To distribute 
 
 Video segment export aims to avoid re-encoding where the platform/source permits. Lossless boundaries can align to nearby keyframes, and some source formats may fail to export. Original files are not overwritten. Temporary exported clips are stored in the app's temporary directory.
 
-## Quality note
+## Video processing and quality
 
-Status HD does not automatically transcode or compress the selected media. It hands the chosen file to the platform share sheet. WhatsApp and other destination apps can still recompress, resize, or otherwise process media after handoff; no third-party app can guarantee that WhatsApp preserves every original pixel or frame.
+On Android, Status HD processes the selected source video locally with AndroidX Media3 Transformer. The enhancement pass applies adjustable brightness, contrast, saturation/lightness, high-quality Lanczos resampling, and H.264/AAC re-encoding at the selected output dimensions. The app verifies that a non-empty processed file was created, offers an in-app playback preview, and then lets the user save or share that processed copy.
+
+The source file is not overwritten; the processed result is a separate copy. Increasing dimensions alone cannot recover details that were never captured, and these filters are not AI super-resolution or generative restoration. Actual visual improvement depends on the source, chosen filter values, and device encoder. Processing consumes time, battery, and storage. WhatsApp may recompress media after sharing.
+
+The dedicated Movie Player opens on its own screen and uses libmpv through media_kit for broad local video format support.
 
 Status HD is an independent project and is not affiliated with WhatsApp or Meta.
