@@ -16,12 +16,12 @@ void main() {
     expect(find.text('Studio'), findsOneWidget);
     expect(find.text('Tools'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
-    expect(find.text('Movie player'), findsNWidgets(2));
+    expect(find.text('Movie player'), findsOneWidget);
 
     await tester.tap(find.text('Tools'));
     await tester.pumpAndSettle();
     expect(find.text('Tools for every clip'), findsOneWidget);
-    expect(find.text('Movie player'), findsNWidgets(2));
+    expect(find.text('Movie player'), findsOneWidget);
     expect(find.text('Quality studio'), findsOneWidget);
     expect(find.text('Trim & split'), findsOneWidget);
     expect(find.text('Theme mode'), findsNothing);
