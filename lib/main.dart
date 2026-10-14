@@ -541,6 +541,23 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _autoSplitFullVideo() async {
+    final controller = _videoController;
+    if (controller == null || !controller.value.isInitialized || _exporting) return;
+    final duration = controller.value.duration.inMilliseconds / 1000.0;
+    if (duration <= 0) {
+      setState(() => _message = 'Could not read the video duration.');
+      return;
+    }
+    setState(() {
+      _trimStart = 0;
+      _trimEnd = duration;
+      _segments = [];
+      _message = 'Automatically splitting the full video into status-length clips…';
+    });
+    await _exportVideoSegments();
+  }
+
   Future<void> _saveSegments() async {
     if (_segments.isEmpty || _busy || _exporting) return;
     setState(() { _busy = true; _message = null; });
@@ -726,9 +743,15 @@ class _HomeScreenState extends State<HomeScreen> {
         ]),
         const SizedBox(height: 12),
         SizedBox(width: double.infinity, child: FilledButton.icon(
+          onPressed: _exporting ? null : _autoSplitFullVideo,
+          icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome_motion_rounded),
+          label: Text(_exporting ? 'Auto-cutting status clips…' : 'Auto-cut full video into status clips'),
+        )),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: OutlinedButton.icon(
           onPressed: _exporting ? null : _exportVideoSegments,
-          icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.movie_creation_outlined),
-          label: Text(_exporting ? 'Preparing clips…' : 'Create 30-second clips'),
+          icon: const Icon(Icons.tune_rounded),
+          label: const Text('Create clips from selected range'),
         )),
         if (_segments.isNotEmpty) ...[
           const SizedBox(height: 8),
