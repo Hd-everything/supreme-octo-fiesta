@@ -776,7 +776,6 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _homeContent(accent),
             _toolsContent(accent),
-            _settingsContent(accent),
           ],
         ),
       ),
@@ -857,8 +856,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 18),
-              _qualityBanner(accent),
-              const SizedBox(height: 12),
               Material(
                 color: Theme.of(context).colorScheme.surface,
                 borderRadius: BorderRadius.circular(widget.rounded ? 24 : 12),
@@ -914,6 +911,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 12),
+              _qualityBanner(accent),
+              const SizedBox(height: 12),
+
               const SizedBox(height: 22),
               if (_selected == null) _emptyPicker(accent) else _mediaPreview(accent),
               if (_selected != null && _isVideo) ...[
