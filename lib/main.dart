@@ -253,7 +253,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _sourceResolution;
   String? _qualityRecommendation;
   final VVideoCompressor _compressor = VVideoCompressor();
-  int _targetLongEdge = 1920;
+  int _targetLongEdge = -1;
   String? _exportEstimateMessage;
   bool _cancelExportRequested = false;
   double _enhanceProgress = 0;
@@ -315,7 +315,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   : 'A high-quality 1080p H.264/AAC status export is selected by default. Choose another resolution if you need a smaller file.';
           // Status preparation prioritizes a clean, high-bitrate 1080p upload source.
           // Keep Original available as an explicit no-reencode option.
-          _targetLongEdge = 1920;
+          _targetLongEdge = -1;
           _exportEstimateMessage = _estimateExportSize();
         });
       }
@@ -353,7 +353,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final sourceShortEdge = sourceWidth < sourceHeight ? sourceWidth : sourceHeight;
     final targetLongEdge = _targetLongEdge == 0
         ? sourceLongEdge
-        : _targetLongEdge;
+        : _targetLongEdge == -1
+            ? (sourceLongEdge < 1920 ? 1920 : sourceLongEdge)
+            : _targetLongEdge;
     final targetShortEdge = (sourceShortEdge * targetLongEdge / sourceLongEdge).round();
     final outputWidth = sourceWidth >= sourceHeight ? targetLongEdge : targetShortEdge;
     final outputHeight = sourceWidth >= sourceHeight ? targetShortEdge : targetLongEdge;
@@ -361,7 +363,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _message = 'Original selected. The source file remains unchanged; no re-encode is needed.');
       return;
     }
-    final presetLabel = _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p';
+    final presetLabel = _targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p';
     setState(() {
       _exporting = true;
       _cancelExportRequested = false;
@@ -612,7 +614,7 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 8),
         SegmentedButton<int>(
           segments: const [
-            ButtonSegment(value: 0, label: Text('Original')),
+            ButtonSegment(value: -1, label: Text('Auto')),
             ButtonSegment(value: 640, label: Text('360p')),
             ButtonSegment(value: 854, label: Text('480p')),
             ButtonSegment(value: 1280, label: Text('720p')),
@@ -631,9 +633,9 @@ class _HomeScreenState extends State<HomeScreen> {
         SizedBox(
           width: double.infinity,
           child: FilledButton.icon(
-            onPressed: _exporting || _busy || _targetLongEdge == 0 ? null : _enhanceVideo,
+            onPressed: _exporting || _busy ? null : _enhanceVideo,
             icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome_rounded),
-            label: Text(_exporting ? 'Exporting video…' : 'Export status video · ${_targetLongEdge == 0 ? 'Original' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p'}'),
+            label: Text(_exporting ? 'Preparing video…' : 'Enhance & prepare · ${_targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p'}'),
           ),
         ),
         if (_exportEstimateMessage != null) ...[
@@ -679,7 +681,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
         const SizedBox(height: 6),
-        const Text('1080p high-bitrate export is selected by default to give WhatsApp a cleaner source. Lower resolutions save storage and data; encoding takes time and battery, and no upscaler can recreate detail missing from the original.', style: TextStyle(color: Colors.white38, fontSize: 10, height: 1.4)),
+        const Text('Auto targets up to 1080p. Upscaling changes output dimensions but cannot recreate detail missing from the source; encoding uses battery and storage.', style: TextStyle(color: Colors.white38, fontSize: 10, height: 1.4)),
       ]),
     );
   }
@@ -780,14 +782,13 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       bottomNavigationBar: NavigationBar(
         height: widget.compact ? 62 : 74,
-        selectedIndex: _tab,
+        selectedIndex: _tab.clamp(0, 1),
         onDestinationSelected: (index) => setState(() => _tab = index),
         backgroundColor: Theme.of(context).colorScheme.surface,
         indicatorColor: accent.withValues(alpha: .16),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.grid_view_rounded), selectedIcon: Icon(Icons.grid_view_rounded), label: 'Studio'),
           NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library_rounded), label: 'Tools'),
-          NavigationDestination(icon: Icon(Icons.tune_rounded), selectedIcon: Icon(Icons.tune_rounded), label: 'Settings'),
         ],
       ),
       drawer: null,
@@ -850,7 +851,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _featurePill(Icons.high_quality_rounded, '1080p export', accent),
+                  _featurePill(Icons.high_quality_rounded, 'Auto quality', accent),
                   _featurePill(Icons.lock_outline_rounded, 'Original preserved', accent),
                   _featurePill(Icons.phone_android_rounded, 'WhatsApp-ready', accent),
                 ],
@@ -988,9 +989,9 @@ class _HomeScreenState extends State<HomeScreen> {
         const Expanded(child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('1080p status export', style: TextStyle(fontWeight: FontWeight.w800)),
+            Text('Status quality studio', style: TextStyle(fontWeight: FontWeight.w800)),
             SizedBox(height: 3),
-            Text('High-bitrate H.264/AAC · original stays untouched', style: TextStyle(fontSize: 11, color: Colors.white60)),
+            Text('Detect source first · choose Auto or a target quality', style: TextStyle(fontSize: 11, color: Colors.white60)),
           ],
         )),
       ],
@@ -1171,7 +1172,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _toolsContent(Color accent) => ListView(
     padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
     children: [
-      const Text('Tools for every clip', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -1.1)),
+      const Text('Studio tools', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -1.1)),
       const SizedBox(height: 8),
       const Text('Prepare status videos at higher quality, cut long clips into parts, or settle in with the local movie player.', style: TextStyle(color: Colors.white60, height: 1.5)),
       const SizedBox(height: 20),
@@ -1220,8 +1221,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _toolCard(
         icon: Icons.high_quality_rounded,
         title: 'Quality studio',
-        detail: 'Upscale and re-encode to high-quality 1080p by default, or choose 360p, 480p, 720p or Original.',
-        badge: 'EXPORT',
+        detail: 'Detect the source, then use Auto or choose 360p, 480p, 720p or 1080p. Keep the original untouched.',
+        badge: 'QUALITY',
         onTap: () {
           setState(() => _tab = 0);
           unawaited(_pickMedia());
