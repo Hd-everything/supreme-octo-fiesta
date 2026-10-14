@@ -732,7 +732,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                                     icon: const Icon(Icons.forward_10_rounded, color: Colors.white, size: 30),
                                   ),
                                   const SizedBox(width: 12),
-                                  Text('×\${_speed.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                                  Text('×${_speed.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                                 ],
                               ),
                             ],
