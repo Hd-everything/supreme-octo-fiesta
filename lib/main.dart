@@ -10,7 +10,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
-import 'package:v_video_compressor/v_video_compressor.dart';
 
 const _mediaChannel = MethodChannel('com.ptip.statushd/media');
 
@@ -252,11 +251,13 @@ class _HomeScreenState extends State<HomeScreen> {
   List<XFile> _segments = [];
   String? _sourceResolution;
   String? _qualityRecommendation;
-  final VVideoCompressor _compressor = VVideoCompressor();
   int _targetLongEdge = -1;
   String? _exportEstimateMessage;
   bool _cancelExportRequested = false;
   double _enhanceProgress = 0;
+  double _brightnessBoost = 0.06;
+  double _contrastBoost = 0.12;
+  double _saturationBoost = 8;
   XFile? _enhancedVideo;
 
   bool get _isVideo {
@@ -309,10 +310,10 @@ class _HomeScreenState extends State<HomeScreen> {
           _sourceResolution = '$width×$height';
           final shortEdge = width < height ? width : height;
           _qualityRecommendation = shortEdge < 480
-              ? 'Low-resolution source detected. Status HD will upscale and re-encode to 1080p by default at a higher bitrate to give WhatsApp a cleaner source. Upscaling cannot recreate missing camera detail.'
+              ? 'Low-resolution source detected. Status HD can apply real brightness, contrast and color adjustments, then encode an enlarged copy. Upscaling alone cannot restore detail that was never captured.'
               : shortEdge < 720
-                  ? 'SD source detected. A 1080p high-bitrate encode is selected by default to give WhatsApp more detail to work with.'
-                  : 'A high-quality 1080p H.264/AAC status export is selected by default. Choose another resolution if you need a smaller file.';
+                  ? 'SD source detected. Status HD will process brightness, contrast and color, then encode an enlarged copy. Enlarging alone cannot restore lost detail.'
+                  : 'Status HD can apply picture adjustments and re-encode the video. Choose output size based on your needs; larger dimensions do not guarantee more detail.';
           // Status preparation prioritizes a clean, high-bitrate 1080p upload source.
           // Keep Original available as an explicit no-reencode option.
           _targetLongEdge = -1;
@@ -374,56 +375,31 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     try {
       final output = '${Directory.systemTemp.path}/statushd_enhanced_${DateTime.now().microsecondsSinceEpoch}.mp4';
-      final result = await _compressor.compressVideo(
-        file.path,
-        VVideoCompressionConfig(
-          quality: _targetLongEdge == 640
-              ? VVideoCompressQuality.veryLow
-              : _targetLongEdge == 854
-                  ? VVideoCompressQuality.low
-                  : _targetLongEdge == 1280
-                      ? VVideoCompressQuality.medium
-                      : VVideoCompressQuality.high,
-          outputPath: output,
-          fallbackToOriginalIfNotSmaller: false,
-          advanced: VVideoAdvancedConfig(
-            customWidth: outputWidth,
-            customHeight: outputHeight,
-            videoCodec: VVideoCodec.h264,
-            audioCodec: VAudioCodec.aac,
-            videoBitrate: _targetLongEdge == 640
-                ? 1200000
-                : _targetLongEdge == 854
-                    ? 2000000
-                    : _targetLongEdge == 1280
-                        ? 4500000
-                        : 8000000,
-            audioBitrate: _targetLongEdge <= 854 ? 128000 : 160000,
-            autoCorrectOrientation: true,
-            dimensionHandling: VDimensionHandling.autoAlign,
-            hardwareAcceleration: true,
-          ),
-        ),
-        onProgress: (progress) {
-          if (mounted) setState(() => _enhanceProgress = progress.clamp(0.0, 1.0));
-        },
-      );
+      final processedPath = await _mediaChannel.invokeMethod<String>('enhanceVideo', {
+        'inputPath': file.path,
+        'outputPath': output,
+        'outputWidth': outputWidth,
+        'outputHeight': outputHeight,
+        'brightness': _brightnessBoost,
+        'contrast': _contrastBoost,
+        'saturation': _saturationBoost,
+      });
       if (_cancelExportRequested) {
-        if (result != null) {
-          try { await File(result.compressedFilePath).delete(); } catch (_) {}
+        if (processedPath != null) {
+          try { await File(processedPath).delete(); } catch (_) {}
         }
-        throw StateError('Export cancelled.');
+        throw StateError('Processing cancelled.');
       }
-      if (result == null || !await File(result.compressedFilePath).exists()) {
-        throw StateError('The video encoder did not produce an output file.');
+      if (processedPath == null || !await File(processedPath).exists()) {
+        throw StateError('The video processor did not produce an output file.');
       }
-      final actualLength = await File(result.compressedFilePath).length();
-      if (actualLength == 0) throw StateError('The enhanced video is empty.');
+      final actualLength = await File(processedPath).length();
+      if (actualLength == 0) throw StateError('The processed video is empty.');
       if (!mounted) return;
       setState(() {
-        _enhancedVideo = XFile(result.compressedFilePath, mimeType: 'video/mp4');
-        _message = 'High-quality status export ready: $outputWidth×$outputHeight H.264/AAC · ${_formatBytes(actualLength)}. Original unchanged; WhatsApp may still recompress the upload.';
-        _exportEstimateMessage = 'Actual output size: ${_formatBytes(actualLength)}';
+        _enhancedVideo = XFile(processedPath, mimeType: 'video/mp4');
+        _message = 'Video processed with brightness, contrast and color adjustments, then encoded as H.264/AAC at $outputWidth×$outputHeight · ${_formatBytes(actualLength)}. The original file remains untouched; WhatsApp may still recompress the copy.';
+        _exportEstimateMessage = 'Processed file size: ${_formatBytes(actualLength)}';
         _enhanceProgress = 1;
       });
     } catch (error) {
@@ -464,7 +440,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (file == null || _busy) return;
     setState(() { _busy = true; _message = null; });
     try {
-      await Share.shareXFiles([file], subject: 'Enhanced video · Status HD', text: 'Enhanced and exported with Status HD');
+      await Share.shareXFiles([file], subject: 'Processed video · Status HD', text: 'Video processed with picture adjustments in Status HD');
       if (mounted) setState(() => _message = 'Enhanced video handed to the share sheet. WhatsApp may still recompress it.');
     } catch (_) {
       if (mounted) setState(() => _message = 'Could not share the enhanced video.');
@@ -627,7 +603,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ])),
         ]),
         const SizedBox(height: 14),
-        const Text('EXPORT RESOLUTION', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
+        const Text('OUTPUT SIZE (ENCODED)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
         const SizedBox(height: 8),
         SegmentedButton<int>(
           segments: const [
@@ -652,7 +628,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: FilledButton.icon(
             onPressed: _exporting || _busy ? null : _enhanceVideo,
             icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome_rounded),
-            label: Text(_exporting ? 'Preparing video…' : 'Enhance & prepare · ${_targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p'}'),
+            label: Text(_exporting ? 'Processing and encoding…' : 'Apply picture enhancement · ${_targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p'}'),
           ),
         ),
         if (_exportEstimateMessage != null) ...[
@@ -666,7 +642,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: TextButton.icon(
               onPressed: () async {
                 _cancelExportRequested = true;
-                try { await _compressor.cancelCompression(); } catch (_) {}
+                _message = 'Cancellation is requested after the current device processing finishes.';
               },
               icon: const Icon(Icons.close_rounded, size: 16),
               label: const Text('Cancel export'),
@@ -698,7 +674,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
         const SizedBox(height: 6),
-        const Text('Auto targets up to 1080p. Upscaling changes output dimensions but cannot recreate detail missing from the source; encoding uses battery and storage.', style: TextStyle(color: Colors.white38, fontSize: 10, height: 1.4)),
+        const Text('These controls apply actual brightness, contrast and color filters before video encoding. Larger output dimensions do not recreate missing detail. Processing uses device resources and creates a new copy; the source file is kept unchanged.', style: TextStyle(color: Colors.white38, fontSize: 10, height: 1.4)),
       ]),
     );
   }
