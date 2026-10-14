@@ -90,13 +90,13 @@ jobs:
               dependency_lines = '''
               implementation("androidx.media3:media3-transformer:1.5.1")
               implementation("androidx.media3:media3-effect:1.5.1")
-          '''
-              match = re.search(r"dependencies\\s*\\{", source)
+              '''
+              match = re.search(r"dependencies\s*\{", source)
               if match:
                   insert_at = match.end()
                   source = source[:insert_at] + dependency_lines + source[insert_at:]
               else:
-                  source += "\\ndependencies {\\n" + dependency_lines + "\\n}\\n"
+                  source += "\ndependencies {\n" + dependency_lines + "\n}\n"
               gradle.write_text(source)
           PY
 
