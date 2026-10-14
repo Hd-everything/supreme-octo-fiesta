@@ -624,14 +624,160 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
             if (orientation == Orientation.landscape && _fileName != null) {
               return ColoredBox(
                 color: Colors.black,
-                child: Center(
-                  child: ColorFiltered(
-                    colorFilter: ColorFilter.matrix(_pictureMatrix(_brightness, _contrast, _saturation)),
-                    child: Video(
-                      controller: _videoController,
-                      fit: BoxFit.contain,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Center(
+                      child: ColorFiltered(
+                        colorFilter: ColorFilter.matrix(_pictureMatrix(_brightness, _contrast, _saturation)),
+                        child: Video(controller: _videoController, fit: BoxFit.contain),
+                      ),
                     ),
-                  ),
+                    Positioned(
+                      top: 8,
+                      left: 12,
+                      right: 12,
+                      child: Row(
+                        children: [
+                          IconButton(
+                            tooltip: 'Back to library',
+                            onPressed: () => Navigator.of(context).maybePop(),
+                            icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+                          ),
+                          Expanded(
+                            child: Text(
+                              _fileName!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Playback options',
+                            onPressed: _showTrackPicker,
+                            icon: const Icon(Icons.subtitles_rounded, color: Colors.white),
+                          ),
+                          IconButton(
+                            tooltip: 'Picture tuning',
+                            onPressed: () => setState(() => _showPictureTuning = !_showPictureTuning),
+                            icon: const Icon(Icons.tune_rounded, color: Colors.white),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 8,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: .72),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: Colors.white.withValues(alpha: .10)),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              StreamBuilder<Duration>(
+                                stream: _player.stream.position,
+                                initialData: _player.state.position,
+                                builder: (context, positionSnapshot) {
+                                  final position = positionSnapshot.data ?? Duration.zero;
+                                  return StreamBuilder<Duration>(
+                                    stream: _player.stream.duration,
+                                    initialData: _player.state.duration,
+                                    builder: (context, durationSnapshot) {
+                                      final duration = durationSnapshot.data ?? Duration.zero;
+                                      final maxMs = duration.inMilliseconds;
+                                      final currentMs = position.inMilliseconds.clamp(0, maxMs > 0 ? maxMs : 0);
+                                      return Row(
+                                        children: [
+                                          Text(_time(position), style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                                          Expanded(
+                                            child: Slider(
+                                              value: maxMs > 0 ? currentMs.toDouble() : 0,
+                                              max: maxMs > 0 ? maxMs.toDouble() : 1,
+                                              onChanged: maxMs <= 0 || _controlsLocked ? null : (value) => unawaited(_player.seek(Duration(milliseconds: value.round()))),
+                                            ),
+                                          ),
+                                          Text(_time(duration), style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                                        ],
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Back 10 seconds',
+                                    onPressed: () => unawaited(_seekBy(const Duration(seconds: -10))),
+                                    icon: const Icon(Icons.replay_10_rounded, color: Colors.white, size: 30),
+                                  ),
+                                  StreamBuilder<bool>(
+                                    stream: _player.stream.playing,
+                                    initialData: _player.state.playing,
+                                    builder: (context, snapshot) => IconButton.filled(
+                                      tooltip: snapshot.data == true ? 'Pause' : 'Play',
+                                      onPressed: () => unawaited(snapshot.data == true ? _player.pause() : _player.play()),
+                                      icon: Icon(snapshot.data == true ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Forward 10 seconds',
+                                    onPressed: () => unawaited(_seekBy(const Duration(seconds: 10))),
+                                    icon: const Icon(Icons.forward_10_rounded, color: Colors.white, size: 30),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Text('×\${_speed.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (_showPictureTuning)
+                      Positioned(
+                        right: 16,
+                        top: 64,
+                        child: SizedBox(
+                          width: 240,
+                          child: Card(
+                            color: const Color(0xFF171B19),
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text('Picture tuning', style: TextStyle(fontWeight: FontWeight.w800)),
+                                  for (final setting in ['Brightness', 'Contrast', 'Saturation'])
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(setting, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                        Slider(
+                                          min: -50,
+                                          max: 50,
+                                          value: setting == 'Brightness' ? _brightness : setting == 'Contrast' ? _contrast : _saturation,
+                                          onChanged: (value) => setState(() {
+                                            if (setting == 'Brightness') _brightness = value;
+                                            if (setting == 'Contrast') _contrast = value;
+                                            if (setting == 'Saturation') _saturation = value;
+                                          }),
+                                        ),
+                                      ],
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               );
             }
