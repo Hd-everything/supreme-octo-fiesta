@@ -412,6 +412,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _previewEnhancedVideo() async {
+    final file = _enhancedVideo;
+    if (file == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => MoviePlayerScreen(initialPath: file.path, initialName: file.name),
+      ),
+    );
+  }
+
   Future<void> _saveEnhancedVideo() async {
     final file = _enhancedVideo;
     if (file == null || _busy || _exporting) return;
@@ -681,7 +691,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_exporting) ...[
           LinearProgressIndicator(value: _enhanceProgress > 0 ? _enhanceProgress : null),
           const SizedBox(height: 6),
-          Text(_enhanceProgress > 0 ? 'Encoding… ${(_enhanceProgress * 100).round()}%' : 'Preparing encoder…', style: const TextStyle(color: Colors.white60, fontSize: 11)),
+          Text(_enhanceProgress > 0 ? 'Encoding… ${(_enhanceProgress * 100).round()}%' : 'Applying picture filters and encoding on device…', style: const TextStyle(color: Colors.white60, fontSize: 11)),
         ],
         SizedBox(
           width: double.infinity,
@@ -710,6 +720,15 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
         if (_enhancedVideo != null) ...[
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _previewEnhancedVideo,
+              icon: const Icon(Icons.play_circle_outline_rounded),
+              label: const Text('Preview processed video'),
+            ),
+          ),
           const SizedBox(height: 8),
           Row(
             children: [
