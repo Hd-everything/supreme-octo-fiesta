@@ -18,7 +18,6 @@ dependencies:
   share_plus: ^10.1.4
   shared_preferences: ^2.3.3
   video_player: ^2.9.2
-  v_video_compressor: ^2.2.2
 
 dev_dependencies:
   flutter_test:
