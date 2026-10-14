@@ -4,6 +4,21 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.Brightness
+import androidx.media3.effect.Contrast
+import androidx.media3.effect.Effects
+import androidx.media3.effect.HslAdjustment
+import androidx.media3.effect.Presentation
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.Transformer
 import android.content.ContentValues
 import android.os.Build
 import android.os.Environment
@@ -15,6 +30,7 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.nio.ByteBuffer
 
+@UnstableApi
 class MainActivity : FlutterActivity() {
     private val channelName = "com.ptip.statushd/media"
 
@@ -36,6 +52,67 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread { result.error("save_failed", error.message ?: "Could not save the video to Gallery.", null) }
                     }
                 }.start()
+                return@setMethodCallHandler
+            }
+            if (call.method == "enhanceVideo") {
+                val inputPath = call.argument<String>("inputPath")
+                val outputPath = call.argument<String>("outputPath")
+                val outputWidth = call.argument<Number>("outputWidth")?.toInt()
+                val outputHeight = call.argument<Number>("outputHeight")?.toInt()
+                val brightness = (call.argument<Number>("brightness")?.toFloat() ?: 0.06f).coerceIn(-0.25f, 0.25f)
+                val contrast = (call.argument<Number>("contrast")?.toFloat() ?: 0.12f).coerceIn(-0.3f, 0.3f)
+                val saturation = (call.argument<Number>("saturation")?.toFloat() ?: 8f).coerceIn(-20f, 30f)
+                if (inputPath.isNullOrBlank() || !File(inputPath).isFile ||
+                    outputPath.isNullOrBlank() || outputWidth == null || outputHeight == null ||
+                    outputWidth < 2 || outputHeight < 2) {
+                    result.error("invalid_arguments", "Choose a valid source video and output size.", null)
+                    return@setMethodCallHandler
+                }
+                val outputFile = File(outputPath)
+                outputFile.parentFile?.mkdirs()
+                outputFile.delete()
+                val effects = listOf(
+                    Brightness(brightness),
+                    Contrast(contrast),
+                    HslAdjustment.Builder().adjustSaturation(saturation).adjustLightness(2f).build(),
+                    Presentation.createForWidthAndHeight(
+                        outputWidth,
+                        outputHeight,
+                        Presentation.LAYOUT_SCALE_TO_FIT
+                    )
+                )
+                val editedItem = EditedMediaItem.Builder(
+                    MediaItem.fromUri(Uri.fromFile(File(inputPath)))
+                ).setEffects(Effects(emptyList(), effects)).build()
+                val transformer = Transformer.Builder(this)
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .addListener(object : Transformer.Listener {
+                        override fun onCompleted(composition: androidx.media3.transformer.Composition, exportResult: ExportResult) {
+                            if (outputFile.isFile && outputFile.length() > 0L) {
+                                result.success(outputFile.absolutePath)
+                            } else {
+                                outputFile.delete()
+                                result.error("enhance_empty", "The video processor completed without producing a valid file.", null)
+                            }
+                        }
+
+                        override fun onError(
+                            composition: androidx.media3.transformer.Composition,
+                            exportResult: ExportResult,
+                            exportException: ExportException
+                        ) {
+                            outputFile.delete()
+                            result.error("enhance_failed", exportException.message ?: "Video enhancement failed on this device.", null)
+                        }
+                    })
+                    .build()
+                try {
+                    transformer.start(editedItem, outputFile.absolutePath)
+                } catch (error: Exception) {
+                    outputFile.delete()
+                    result.error("enhance_start_failed", error.message ?: "Could not start video processing.", null)
+                }
                 return@setMethodCallHandler
             }
             if (call.method != "trimVideo") {
