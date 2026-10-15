@@ -398,10 +398,18 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       setState(() {
         _enhancedVideo = XFile(processedPath, mimeType: 'video/mp4');
-        _message = 'Video processed with brightness, contrast and color adjustments, then encoded as H.264/AAC at $outputWidth×$outputHeight · ${_formatBytes(actualLength)}. The original file remains untouched; WhatsApp may still recompress the copy.';
-        _exportEstimateMessage = 'Processed file size: ${_formatBytes(actualLength)}';
+        _message = 'Finished encoding at $outputWidth×$outputHeight · ${_formatBytes(actualLength)}. Opening the processed file in Movie Player.';
+        _exportEstimateMessage = 'Output: ${outputWidth}×${outputHeight} · ${_formatBytes(actualLength)}';
         _enhanceProgress = 1;
       });
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => MoviePlayerScreen(
+            initialPath: processedPath,
+            initialName: File(processedPath).uri.pathSegments.last,
+          ),
+        ),
+      );
     } catch (error) {
       if (mounted) setState(() => _message = _cancelExportRequested
           ? 'Export cancelled. The original video is unchanged.'
@@ -698,7 +706,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: FilledButton.icon(
             onPressed: _exporting || _busy ? null : _enhanceVideo,
             icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome_rounded),
-            label: Text(_exporting ? 'Processing and encoding…' : 'Apply picture enhancement · ${_targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p'}'),
+            label: Text(_exporting ? 'Processing and encoding…' : 'Process video · ${_targetLongEdge == -1 ? 'Auto / 1080p minimum' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p'}'),
           ),
         ),
         if (_exportEstimateMessage != null) ...[
@@ -724,9 +732,9 @@ class _HomeScreenState extends State<HomeScreen> {
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: _previewEnhancedVideo,
-              icon: const Icon(Icons.play_circle_outline_rounded),
-              label: const Text('Preview processed video'),
+              onPressed: _openMoviePlayer,
+              icon: const Icon(Icons.play_circle_fill_rounded),
+              label: const Text('Open Movie Player'),
             ),
           ),
           const SizedBox(height: 8),
@@ -860,12 +868,19 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: NavigationBar(
         height: widget.compact ? 62 : 74,
         selectedIndex: _tab,
-        onDestinationSelected: (index) => setState(() => _tab = index),
+        onDestinationSelected: (index) {
+          if (index == 2) {
+            unawaited(_openMoviePlayer());
+          } else {
+            setState(() => _tab = index);
+          }
+        },
         backgroundColor: Theme.of(context).colorScheme.surface,
         indicatorColor: accent.withValues(alpha: .16),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.grid_view_rounded), selectedIcon: Icon(Icons.grid_view_rounded), label: 'Studio'),
           NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library_rounded), label: 'Tools'),
+          NavigationDestination(icon: Icon(Icons.play_circle_outline_rounded), selectedIcon: Icon(Icons.play_circle_fill_rounded), label: 'Movie Player'),
         ],
       ),
       drawer: null,
@@ -927,7 +942,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 28),
               Text('Make your status\nlook its best.', style: TextStyle(fontSize: widget.compact ? 30 : 36, height: 1.04, fontWeight: FontWeight.w800, letterSpacing: -1.25)),
               const SizedBox(height: 12),
-              const Text('Choose a photo or video, adjust brightness, contrast and color, then process and share a new copy. The source file stays untouched.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
+              const Text('Process a video to a selected output resolution, then watch the encoded result in Movie Player.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
               const SizedBox(height: 18),
               Wrap(
                 spacing: 8,
