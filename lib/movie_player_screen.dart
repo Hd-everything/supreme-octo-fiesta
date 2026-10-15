@@ -825,7 +825,12 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     final landscapePlayback = MediaQuery.orientationOf(context) == Orientation.landscape && _fileName != null;
     return Scaffold(
       appBar: landscapePlayback ? null : AppBar(
-        title: const Text('Movie player'),
+        leading: _fileName == null ? null : IconButton(
+          tooltip: 'Back to video library',
+          onPressed: _returnToLibrary,
+          icon: const Icon(Icons.arrow_back_rounded),
+        ),
+        title: Text(_fileName == null ? 'Movie Player' : 'Now playing'),
         actions: [
           IconButton(
             tooltip: 'Open movie',
