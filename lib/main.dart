@@ -22,6 +22,8 @@ const _accentChoices = <Color>[
   Color(0xFFF4D35E),
 ];
 
+const _recentExportsKey = 'recent_status_exports_v1';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
@@ -172,6 +174,7 @@ class _StatusHdAppState extends State<StatusHdApp> {
         ),
       ),
       home: HomeScreen(
+        preferences: widget.preferences,
         accent: accent,
         accentIndex: _accentIndex,
         customAccent: _customAccent,
@@ -197,6 +200,7 @@ class _StatusHdAppState extends State<StatusHdApp> {
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
+    required this.preferences,
     required this.accent,
     required this.accentIndex,
     required this.customAccent,
@@ -216,6 +220,7 @@ class HomeScreen extends StatefulWidget {
     required this.onRoundedChanged,
   });
 
+  final SharedPreferences preferences;
   final Color accent;
   final int accentIndex;
   final int customAccent;
@@ -261,12 +266,89 @@ class _HomeScreenState extends State<HomeScreen> {
   double _contrastBoost = 0.18;
   double _saturationBoost = 14;
   XFile? _enhancedVideo;
+  List<Map<String, String>> _recentExports = <Map<String, String>>[];
 
   bool get _isVideo {
     final name = _selected?.name.toLowerCase() ?? '';
     return name.endsWith('.mp4') || name.endsWith('.mov') ||
         name.endsWith('.m4v') || name.endsWith('.webm') ||
         name.endsWith('.3gp') || name.endsWith('.mkv');
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecentExports();
+  }
+
+  Future<void> _loadRecentExports() async {
+    final entries = <Map<String, String>>[];
+    for (final raw in widget.preferences.getStringList(_recentExportsKey) ?? const <String>[]) {
+      try {
+        final decoded = jsonDecode(raw) as Map<String, dynamic>;
+        final path = decoded['path']?.toString() ?? '';
+        if (path.isNotEmpty) {
+          entries.add({
+            'path': path,
+            'name': decoded['name']?.toString() ?? 'Status HD export',
+            'kind': decoded['kind']?.toString() ?? 'Export',
+            'createdAt': decoded['createdAt']?.toString() ?? '',
+          });
+        }
+      } catch (_) {}
+    }
+    if (mounted) setState(() => _recentExports = entries);
+  }
+
+  Future<void> _recordExports(List<XFile> files, String kind) async {
+    final now = DateTime.now().toIso8601String();
+    final next = <Map<String, String>>[
+      for (final file in files) {
+        'path': file.path,
+        'name': file.name,
+        'kind': kind,
+        'createdAt': now,
+      },
+      ..._recentExports.where((entry) => !files.any((file) => file.path == entry['path'])),
+    ].take(12).toList();
+    if (mounted) setState(() => _recentExports = next);
+    await widget.preferences.setStringList(
+      _recentExportsKey,
+      next.map(jsonEncode).toList(),
+    );
+  }
+
+  Future<void> _shareRecentExport(Map<String, String> entry) async {
+    final path = entry['path']!;
+    if (!await File(path).exists()) {
+      if (mounted) setState(() => _message = 'This temporary export is no longer available. Saved copies remain in your gallery.');
+      return;
+    }
+    await Share.shareXFiles([XFile(path, mimeType: 'video/mp4')], subject: entry['name']);
+  }
+
+  Future<void> _removeRecentExport(Map<String, String> entry) async {
+    final next = [..._recentExports]..remove(entry);
+    setState(() => _recentExports = next);
+    await widget.preferences.setStringList(_recentExportsKey, next.map(jsonEncode).toList());
+  }
+
+  void _applyWhatsAppStatusPreset() {
+    final controller = _videoController;
+    if (controller == null || !controller.value.isInitialized) return;
+    final total = controller.value.duration.inMilliseconds / 1000.0;
+    setState(() {
+      _cropRatio = '9:16';
+      _targetLongEdge = 1920;
+      _trimStart = 0;
+      _trimEnd = total > 30 ? 30 : total;
+      _enhancedVideo = null;
+      _segments = [];
+      _exportEstimateMessage = _estimateExportSize();
+      _message = total > 30
+          ? 'WhatsApp Status preset applied: 9:16 frame, 1080p output and the first 30 seconds selected. Use Auto-cut for every clip.'
+          : 'WhatsApp Status preset applied: 9:16 frame, 1080p output and a status-length clip.';
+    });
   }
 
   @override
@@ -415,6 +497,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _exportEstimateMessage = 'Encoded output: ${outputWidth}×${outputHeight} · ${_formatBytes(actualLength)}';
         _enhanceProgress = 1;
       });
+      unawaited(_recordExports([XFile(processedPath, mimeType: 'video/mp4')], 'Enhanced video'));
     } catch (error) {
       if (mounted) setState(() => _message = _cancelExportRequested
           ? 'Export cancelled. The original video is unchanged.'
@@ -609,6 +692,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _message = 'Cropped video ready: ${preview.value.size.width.round()}×${preview.value.size.height.round()}. The original is unchanged.';
         _exportEstimateMessage = 'Cropped output: ${_formatBytes(outputBytes)}';
       });
+      unawaited(_recordExports([XFile(path, mimeType: 'video/mp4')], 'Cropped video'));
       await preview.play();
       if (mounted) setState(() {});
     } on PlatformException catch (error) {
@@ -657,6 +741,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _segments = exported;
         _message = 'Created ${exported.length} segment(s), each up to 30 seconds. The video is remuxed where supported, without intentional re-encoding.';
       });
+      unawaited(_recordExports(exported, 'Status clip'));
     } on PlatformException catch (error) {
       if (mounted) setState(() => _message = error.message ?? 'This video could not be trimmed on this device.');
     } catch (_) {
@@ -1117,6 +1202,8 @@ class _HomeScreenState extends State<HomeScreen> {
               if (_selected == null) _emptyPicker(accent) else _mediaPreview(accent),
               if (_selected != null && _isVideo) ...[
                 const SizedBox(height: 14),
+                _whatsAppStatusPreset(accent),
+                const SizedBox(height: 14),
                 _qualityInfo(accent),
                 const SizedBox(height: 14),
                 _videoTools(accent),
@@ -1124,6 +1211,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 14),
                   _processedOutputPreview(accent),
                 ],
+              ],
+              if (_recentExports.isNotEmpty) ...[
+                const SizedBox(height: 22),
+                _recentExportsCard(accent),
               ],
               const SizedBox(height: 20),
               Row(
@@ -1155,6 +1246,72 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+
+  Widget _whatsAppStatusPreset(Color accent) => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: accent.withValues(alpha: .09),
+      borderRadius: BorderRadius.circular(widget.rounded ? 20 : 12),
+      border: Border.all(color: accent.withValues(alpha: .28)),
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Icon(Icons.phone_android_rounded, color: accent),
+        const SizedBox(width: 9),
+        const Expanded(child: Text('WhatsApp Status preset', style: TextStyle(fontWeight: FontWeight.w800))),
+        Text('9:16 · 1080p', style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w800)),
+      ]),
+      const SizedBox(height: 6),
+      const Text('Sets a vertical frame, 1080p output and a 30-second selection. Review and export each step; your original is never changed.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.4)),
+      const SizedBox(height: 12),
+      SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          onPressed: _exporting ? null : _applyWhatsAppStatusPreset,
+          icon: const Icon(Icons.auto_awesome_rounded),
+          label: const Text('Apply Status preset'),
+        ),
+      ),
+    ]),
+  );
+
+  Widget _recentExportsCard(Color accent) => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(widget.rounded ? 20 : 12),
+      border: Border.all(color: Colors.white.withValues(alpha: .07)),
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Icon(Icons.history_rounded, color: accent),
+        const SizedBox(width: 9),
+        const Expanded(child: Text('Recent exports', style: TextStyle(fontWeight: FontWeight.w800))),
+        Text('${_recentExports.length}', style: TextStyle(color: accent, fontWeight: FontWeight.w800)),
+      ]),
+      const SizedBox(height: 6),
+      const Text('Quickly share a processed file again. Save important exports to your device; temporary workspace files may be cleared by Android.', style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.4)),
+      const SizedBox(height: 8),
+      for (final entry in _recentExports.take(4))
+        FutureBuilder<bool>(
+          future: File(entry['path']!).exists(),
+          builder: (context, snapshot) {
+            final available = snapshot.data ?? false;
+            return ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(available ? Icons.video_file_rounded : Icons.video_file_outlined, color: available ? accent : Colors.white38),
+              title: Text(entry['name']!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+              subtitle: Text(available ? entry['kind']! : 'Temporary file cleared', style: const TextStyle(fontSize: 11, color: Colors.white54)),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(tooltip: 'Share export', onPressed: available ? () => _shareRecentExport(entry) : null, icon: const Icon(Icons.ios_share_rounded, size: 19)),
+                IconButton(tooltip: 'Remove from recent exports', onPressed: () => _removeRecentExport(entry), icon: const Icon(Icons.close_rounded, size: 19)),
+              ]),
+            );
+          },
+        ),
+    ]),
+  );
 
   Widget _featurePill(IconData icon, String label, Color accent) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
