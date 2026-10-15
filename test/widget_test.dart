@@ -21,7 +21,7 @@ void main() {
 
     await tester.tap(find.text('Tools'));
     await tester.pumpAndSettle();
-    expect(find.text('Tools for every clip'), findsOneWidget);
+    expect(find.text('Studio tools'), findsOneWidget);
     expect(find.text('Movie Player'), findsOneWidget);
     expect(find.text('Quality studio'), findsOneWidget);
     expect(find.text('Trim & split'), findsOneWidget);
