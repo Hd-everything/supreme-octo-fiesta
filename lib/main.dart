@@ -594,6 +594,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (path == null || !await File(path).exists() || await File(path).length() == 0) {
         throw StateError('The crop processor did not produce a valid output file.');
       }
+      final outputBytes = await File(path).length();
       await _enhancedPreviewController?.dispose();
       final preview = VideoPlayerController.file(File(path));
       await preview.initialize();
@@ -606,7 +607,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _enhancedVideo = XFile(path, mimeType: 'video/mp4');
         _enhancedPreviewController = preview;
         _message = 'Cropped video ready: ${preview.value.size.width.round()}×${preview.value.size.height.round()}. The original is unchanged.';
-        _exportEstimateMessage = 'Cropped output: ${_formatBytes(await File(path).length())}';
+        _exportEstimateMessage = 'Cropped output: ${_formatBytes(outputBytes)}';
       });
       await preview.play();
       if (mounted) setState(() {});
