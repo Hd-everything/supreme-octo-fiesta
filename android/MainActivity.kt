@@ -32,10 +32,32 @@ import java.nio.ByteBuffer
 @UnstableApi
 class MainActivity : FlutterActivity() {
     private val channelName = "com.ptip.statushd/media"
+    private var pendingVideoLibraryResult: MethodChannel.Result? = null
+    private val videoLibraryRequestCode = 7001
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+            if (call.method == "listDeviceVideos") {
+                val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    android.Manifest.permission.READ_MEDIA_VIDEO
+                } else {
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE
+                }
+                if (checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    try {
+                        result.success(queryDeviceVideos())
+                    } catch (error: Exception) {
+                        result.error("media_query_failed", error.message ?: "Could not scan device videos.", null)
+                    }
+                } else if (pendingVideoLibraryResult != null) {
+                    result.error("permission_pending", "Video library permission is already being requested.", null)
+                } else {
+                    pendingVideoLibraryResult = result
+                    requestPermissions(arrayOf(permission), videoLibraryRequestCode)
+                }
+                return@setMethodCallHandler
+            }
             if (call.method == "saveVideoToGallery") {
                 val inputPath = call.argument<String>("inputPath")
                 val displayName = call.argument<String>("displayName") ?: "StatusHD_${System.currentTimeMillis()}.mp4"
@@ -139,6 +161,39 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != videoLibraryRequestCode) return
+        val callback = pendingVideoLibraryResult ?: return
+        pendingVideoLibraryResult = null
+        if (grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            try { callback.success(queryDeviceVideos()) }
+            catch (error: Exception) { callback.error("media_query_failed", error.message ?: "Could not scan device videos.", null) }
+        } else { callback.success(emptyList<Map<String, Any>>()) }
+    }
+
+    private fun queryDeviceVideos(): List<Map<String, Any>> {
+        val videos = mutableListOf<Map<String, Any>>()
+        val projection = arrayOf(MediaStore.Video.Media.DATA, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.SIZE, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_MODIFIED)
+        contentResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, null, null, "date_modified DESC")?.use { cursor ->
+            val pathColumn = cursor.getColumnIndex(MediaStore.Video.Media.DATA)
+            val nameColumn = cursor.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+            val sizeColumn = cursor.getColumnIndex(MediaStore.Video.Media.SIZE)
+            val durationColumn = cursor.getColumnIndex(MediaStore.Video.Media.DURATION)
+            val modifiedColumn = cursor.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
+            while (cursor.moveToNext()) {
+                val path = if (pathColumn >= 0 && !cursor.isNull(pathColumn)) cursor.getString(pathColumn) else null
+                val name = if (nameColumn >= 0 && !cursor.isNull(nameColumn)) cursor.getString(nameColumn) else "Video"
+                if (path.isNullOrBlank() || !File(path).isFile) continue
+                videos.add(mapOf("path" to path, "name" to name, "size" to if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) cursor.getLong(sizeColumn) else 0L, "duration" to if (durationColumn >= 0 && !cursor.isNull(durationColumn)) cursor.getLong(durationColumn) else 0L, "modified" to if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) cursor.getLong(modifiedColumn) else 0L))
+            }
+        }
+        return videos
+    }
     private fun saveVideoToGallery(inputPath: String, displayName: String): android.net.Uri {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             throw IllegalStateException("Saving directly to Gallery requires Android 10 or newer. Use Share to save this export instead.")
