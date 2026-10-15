@@ -1,7 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
-
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -10,11 +8,11 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Local movie player backed by libmpv through media_kit. This supports a
-/// much wider range of containers and codecs than the status-preview player.
+/// A focused, cinema-style local movie player using libmpv/media_kit.
+/// Video enhancement uses the app's native Media3 encoder; it does not upload
+/// private videos to an unspecified third-party service.
 class MoviePlayerScreen extends StatefulWidget {
   const MoviePlayerScreen({super.key, this.initialPath, this.initialName});
-
   final String? initialPath;
   final String? initialName;
 
@@ -23,1472 +21,343 @@ class MoviePlayerScreen extends StatefulWidget {
 }
 
 class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
+  static const _channel = MethodChannel('com.ptip.statushd/media');
+  static const _extensions = <String>['mp4','mkv','avi','mov','webm','flv','wmv','m4v','3gp','ts','mpeg','mpg','ogv','vob','asf','m2ts','mts','mxf'];
   late final Player _player;
-  late final VideoController _videoController;
-  String? _fileName;
-  String? _currentPath;
-  Timer? _resumeTimer;
-  Timer? _sleepTimer;
-  Timer? _abRepeatTimer;
-  bool _abRepeatSeeking = false;
-  Duration? _repeatStart;
-  Duration? _repeatEnd;
-  String? _sleepTimerLabel;
-  String? _playbackMessage;
-  bool _controlsLocked = false;
-  List<Map<String, String>> _recentMovies = <Map<String, String>>[];
-  List<Map<String, String>> _deviceMovies = <Map<String, String>>[];
-  bool _scanningDevice = false;
-  int _sourceWidth = 0;
-  int _sourceHeight = 0;
-  String _libraryQuery = '';
+  late final VideoController _video;
+  final TextEditingController _search = TextEditingController();
+  List<Map<String,String>> _videos = [];
+  List<Map<String,String>> _recent = [];
+  String? _path;
+  String? _name;
   String? _error;
-  bool _opening = false;
-  bool _landscapeSystemUi = false;
-  bool _showPictureTuning = false;
-  double _brightness = 0;
-  double _contrast = 0;
-  double _saturation = 0;
+  String? _status;
+  int _width = 0, _height = 0, _target = 1080;
+  bool _scanning = false, _opening = false, _enhancing = false, _showControls = true;
   double _speed = 1;
-  String? _subtitleMessage;
+  Timer? _hideTimer;
 
-  static const _videoExtensions = <String>[
-    'mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv', 'm4v', '3gp',
-    'ts', 'mpeg', 'mpg', 'ogv', 'vob', 'asf', 'm2ts', 'mts', 'mxf',
-  ];
+  Color get _accent => Theme.of(context).colorScheme.primary;
+  bool get _watching => _path != null && _name != null;
 
   @override
   void initState() {
     super.initState();
     _player = Player();
-    _videoController = VideoController(_player);
-    unawaited(_loadRecentMovies());
-    unawaited(_loadDeviceMovies());
+    _video = VideoController(_player);
+    _loadRecent();
+    _scan();
     if (widget.initialPath != null && widget.initialPath!.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(_openMovie(widget.initialPath!, widget.initialName ?? File(widget.initialPath!).uri.pathSegments.last));
-      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _open(widget.initialPath!, widget.initialName ?? File(widget.initialPath!).uri.pathSegments.last));
     }
   }
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final wantsImmersive = MediaQuery.orientationOf(context) == Orientation.landscape && _fileName != null;
-    if (wantsImmersive == _landscapeSystemUi) return;
-    _landscapeSystemUi = wantsImmersive;
-    unawaited(SystemChrome.setEnabledSystemUIMode(
-      wantsImmersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
-    ));
-  }
-
-  @override
   void dispose() {
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    _resumeTimer?.cancel();
-    _sleepTimer?.cancel();
-    _abRepeatTimer?.cancel();
-    unawaited(_persistPlaybackPosition());
+    _hideTimer?.cancel();
+    _search.dispose();
     unawaited(_player.dispose());
     super.dispose();
   }
 
   String _resumeKey(String path) => 'movie_resume_${Uri.encodeComponent(path)}';
 
-  Future<void> _persistPlaybackPosition() async {
-    final path = _currentPath;
-    if (path == null) return;
+  Future<void> _loadRecent() async {
     try {
-      final position = _player.state.position;
-      final duration = _player.state.duration;
-      final preferences = await SharedPreferences.getInstance();
-      if (duration > Duration.zero && duration - position <= const Duration(seconds: 3)) {
-        await preferences.remove(_resumeKey(path));
-      } else if (position >= const Duration(seconds: 10)) {
-        await preferences.setInt(_resumeKey(path), position.inMilliseconds);
-      }
-    } catch (_) {
-      // Resume history is optional and must never interrupt playback.
-    }
-  }
-
-  void _startResumeCheckpoint() {
-    _resumeTimer?.cancel();
-    _resumeTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) => unawaited(_persistPlaybackPosition()),
-    );
-  }
-
-  Future<void> _loadRecentMovies() async {
-    try {
-      final preferences = await SharedPreferences.getInstance();
-      final entries = preferences.getStringList('recent_movies') ?? <String>[];
-      final movies = <Map<String, String>>[];
-      for (final entry in entries) {
+      final prefs = await SharedPreferences.getInstance();
+      final items = <Map<String,String>>[];
+      for (final raw in prefs.getStringList('movie_recent_v2') ?? const <String>[]) {
         try {
-          final decoded = jsonDecode(entry) as Map<String, dynamic>;
-          final path = decoded['path'] as String?;
-          final name = decoded['name'] as String?;
-          if (path != null && name != null && path.isNotEmpty && name.isNotEmpty) {
-            movies.add({'path': path, 'name': name});
-          }
-        } catch (_) {
-          // Ignore invalid entries and keep the rest of the library.
-        }
+          final map = Map<String,dynamic>.from((Uri.decodeComponent(raw)).isEmpty ? {} : const {});
+          // Older history is intentionally optional; the current library scan is authoritative.
+          if (map.isNotEmpty) items.add(map.map((k,v) => MapEntry(k, '$v')));
+        } catch (_) {}
       }
-      if (mounted) setState(() => _recentMovies = movies);
-    } catch (_) {
-      // Recent history is optional.
-    }
+      if (mounted) setState(() => _recent = items);
+    } catch (_) {}
   }
 
-  Future<void> _loadDeviceMovies() async {
-    if (!Platform.isAndroid || _scanningDevice) return;
-    if (mounted) setState(() => _scanningDevice = true);
-    try {
-      final result = await const MethodChannel("com.ptip.statushd/media").invokeMethod<List<dynamic>>("listDeviceVideos");
-      final movies = <Map<String, String>>[];
-      for (final item in result ?? const <dynamic>[]) {
-        if (item is! Map) continue;
-        final path = item["path"]?.toString();
-        final name = item["name"]?.toString();
-        if (path != null && path.isNotEmpty && name != null && name.isNotEmpty) {
-          movies.add({"path": path, "name": name});
-        }
-      }
-      if (mounted) setState(() => _deviceMovies = movies);
-    } on PlatformException catch (error) {
-      if (mounted) setState(() => _error = error.message ?? "Could not scan videos on this device.");
-    } catch (_) {
-      if (mounted) setState(() => _error = "Could not scan videos on this device.");
-    } finally {
-      if (mounted) setState(() => _scanningDevice = false);
-    }
-  }
-  Future<void> _rememberRecentMovie(String path, String name) async {
-    final next = <Map<String, String>>[
+  Future<void> _saveRecent(String path, String name) async {
+    final next = <Map<String,String>>[
       {'path': path, 'name': name},
-      ..._recentMovies.where((movie) => movie['path'] != path),
-    ].take(12).toList();
-    if (mounted) setState(() => _recentMovies = next);
+      ..._recent.where((v) => v['path'] != path),
+    ].take(10).toList();
+    if (mounted) setState(() => _recent = next);
     try {
-      final preferences = await SharedPreferences.getInstance();
-      await preferences.setStringList('recent_movies', next.map((movie) => jsonEncode(movie)).toList());
-    } catch (_) {
-      // Recent history is a convenience, not a playback requirement.
-    }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('movie_recent_v2', next.map((v) => Uri.encodeComponent('${v['path']}|${v['name']}')).toList());
+    } catch (_) {}
   }
 
-  Future<void> _removeRecentMovie(Map<String, String> movie) async {
-    final path = movie['path'];
-    if (path == null) return;
-    final next = _recentMovies.where((entry) => entry['path'] != path).toList();
-    if (mounted) setState(() => _recentMovies = next);
+  Future<void> _scan() async {
+    if (!Platform.isAndroid || _scanning) return;
+    setState(() => _scanning = true);
     try {
-      final preferences = await SharedPreferences.getInstance();
-      await preferences.setStringList(
-        'recent_movies',
-        next.map((entry) => jsonEncode(entry)).toList(),
-      );
-    } catch (_) {
-      // Removing a history entry must not affect active playback.
-    }
-  }
-
-  Future<void> _clearRecentMovies() async {
-    if (_recentMovies.isEmpty) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Clear recent movies?'),
-        content: const Text('This only clears the playback history. Your video files will not be deleted.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Clear history')),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    if (mounted) setState(() => _recentMovies = <Map<String, String>>[]);
-    try {
-      final preferences = await SharedPreferences.getInstance();
-      await preferences.remove('recent_movies');
-    } catch (_) {
-      // History storage is optional.
-    }
-  }
-
-  Future<void> _addMoviesToLibrary() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: _videoExtensions,
-        allowMultiple: true,
-        withData: false,
-      );
-      if (result == null || result.files.isEmpty || !mounted) return;
-      var added = 0;
-      for (final file in result.files) {
-        final path = file.path;
-        if (path == null || path.isEmpty) continue;
-        await _rememberRecentMovie(path, file.name);
-        added++;
+      final items = await _channel.invokeMethod<List<dynamic>>('listDeviceVideos');
+      final next = <Map<String,String>>[];
+      for (final item in items ?? const []) {
+        if (item is Map) {
+          final path = item['path']?.toString() ?? '';
+          final name = item['name']?.toString() ?? '';
+          if (path.isNotEmpty && name.isNotEmpty) next.add({'path':path,'name':name});
+        }
       }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(added == 1 ? 'Added 1 movie to your library.' : 'Added $added movies to your library.')),
-        );
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(() => _error = 'Could not add these videos to the library: $error');
-      }
+      if (mounted) setState(() { _videos = next; _error = null; });
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Could not scan device videos. Use Browse files to choose a video.');
+    } finally {
+      if (mounted) setState(() => _scanning = false);
     }
   }
 
-  Future<void> _openNetworkStream() async {
-    final controller = TextEditingController();
-    final uri = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Play from internet'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.url,
-          decoration: const InputDecoration(
-            hintText: 'https://…',
-            labelText: 'Video or stream URL',
-            helperText: 'Use a direct video URL or a compatible HLS/DASH stream.',
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, controller.text.trim()), child: const Text('Play')),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (uri == null || uri.isEmpty || !mounted) return;
-    final parsed = Uri.tryParse(uri);
-    if (parsed == null || !parsed.hasScheme || !{'http', 'https'}.contains(parsed.scheme.toLowerCase()) || parsed.host.isEmpty) {
-      setState(() => _error = 'Enter a valid HTTP or HTTPS video/stream URL.');
-      return;
-    }
+  Future<void> _browse() async {
     try {
-      await _persistPlaybackPosition();
-      _resumeTimer?.cancel();
-      setState(() {
-        _opening = true;
-        _error = null;
-        _fileName = parsed.pathSegments.isEmpty ? parsed.host : Uri.decodeComponent(parsed.pathSegments.last);
-        _currentPath = null;
-        _sourceWidth = 0;
-        _sourceHeight = 0;
-        _playbackMessage = 'Internet stream · available quality levels depend on the source.';
-        _subtitleMessage = null;
-      });
-      await _player.open(Media(uri), play: true);
-      if (mounted) setState(() => _opening = false);
-    } catch (error) {
-      if (mounted) setState(() {
-        _opening = false;
-        _error = 'Could not open this stream: $error';
-      });
-    }
-  }
-
-  Future<void> _chooseMovie() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: _videoExtensions,
-        allowMultiple: false,
-        withData: false,
-      );
+      final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: _extensions, allowMultiple: false, withData: false);
       if (result == null || result.files.isEmpty || !mounted) return;
       final file = result.files.single;
-      final path = file.path;
-      if (path == null || path.isEmpty) {
-        setState(() => _error = 'This file provider did not return a readable local path. Try choosing the file from device storage.');
-        return;
-      }
-      await _openMovie(path, file.name);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _opening = false;
-        _error = 'Could not open this movie. Details: $error';
-      });
+      if (file.path == null) throw StateError('This file provider did not return a readable path.');
+      await _open(file.path!, file.name);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Could not open that video: $e');
     }
   }
 
-  Future<void> _openMovie(String path, String name) async {
+  Future<void> _open(String path, String name) async {
+    if (_opening) return;
+    setState(() { _opening = true; _error = null; _status = null; _path = path; _name = name; _width = 0; _height = 0; });
     try {
-      _resumeTimer?.cancel();
-      _abRepeatTimer?.cancel();
-      _repeatStart = null;
-      _repeatEnd = null;
-      _abRepeatSeeking = false;
-      await _persistPlaybackPosition();
-      if (!mounted) return;
-      setState(() {
-        _opening = true;
-        _playbackMessage = null;
-        _error = null;
-        _fileName = name;
-        _currentPath = path;
-        _brightness = 0;
-        _contrast = 0;
-        _saturation = 0;
-        _speed = 1;
-        _subtitleMessage = null;
-      });
       await _player.open(Media(path), play: true);
       try {
-        final dimensions = await const MethodChannel("com.ptip.statushd/media").invokeMapMethod<String, dynamic>("getVideoDimensions", {"path": path});
-        if (dimensions != null && mounted) {
-          setState(() {
-            _sourceWidth = (dimensions["width"] as num?)?.toInt() ?? 0;
-            _sourceHeight = (dimensions["height"] as num?)?.toInt() ?? 0;
-          });
-        }
-      } catch (_) {
-        _sourceWidth = 0;
-        _sourceHeight = 0;
-      }
-      await _rememberRecentMovie(path, name);
+        final dimensions = await _channel.invokeMapMethod<String,dynamic>('getVideoDimensions', {'path':path});
+        if (mounted && dimensions != null) setState(() {
+          _width = (dimensions['width'] as num?)?.toInt() ?? 0;
+          _height = (dimensions['height'] as num?)?.toInt() ?? 0;
+        });
+      } catch (_) {}
+      await _saveRecent(path, name);
       try {
-        final preferences = await SharedPreferences.getInstance();
-        final savedPosition = preferences.getInt(_resumeKey(path));
-        if (savedPosition != null && savedPosition >= 10000) {
-          final duration = await _player.stream.duration
-              .firstWhere((value) => value > Duration.zero)
-              .timeout(const Duration(seconds: 8), onTimeout: () => _player.state.duration);
-          final resumeAt = Duration(milliseconds: savedPosition);
-          if (duration > Duration.zero && duration - resumeAt > const Duration(seconds: 3)) {
-            await _player.seek(resumeAt);
-          } else {
-            await preferences.remove(_resumeKey(path));
-          }
-        }
-        _startResumeCheckpoint();
-      } catch (_) {
-        // Playback must remain available even if resume storage fails.
-      }
-      if (!mounted) return;
-      setState(() => _opening = false);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _opening = false;
-        _error = 'Could not play this file. The format may be damaged or use a codec this device cannot decode. Details: $error';
-      });
+        final prefs = await SharedPreferences.getInstance();
+        final saved = prefs.getInt(_resumeKey(path));
+        if (saved != null && saved > 10000) await _player.seek(Duration(milliseconds: saved));
+      } catch (_) {}
+      if (mounted) setState(() => _opening = false);
+      _armControls();
+    } catch (e) {
+      if (mounted) setState(() { _opening = false; _error = 'This video could not be played: $e'; });
     }
   }
 
-
-  void _returnToLibrary() {
-    unawaited(_player.stop());
-    setState(() {
-      _fileName = null;
-      _currentPath = null;
-      _sourceWidth = 0;
-      _sourceHeight = 0;
-      _error = null;
+  void _armControls() {
+    _hideTimer?.cancel();
+    if (mounted) setState(() => _showControls = true);
+    _hideTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _player.state.playing) setState(() => _showControls = false);
     });
-    unawaited(_loadDeviceMovies());
   }
 
-  Future<void> _openRecentMovie(Map<String, String> movie) async {
-    final path = movie['path'];
-    final name = movie['name'];
-    if (path == null || name == null) return;
-    if (!await File(path).exists()) {
-      if (mounted) setState(() => _error = 'This file is no longer available at its saved location. Choose it again from storage.');
-      return;
+  void _backToLibrary() {
+    unawaited(_player.stop());
+    setState(() { _path = null; _name = null; _status = null; _error = null; });
+    unawaited(_scan());
+  }
+
+  String _time(Duration d) {
+    final h = d.inHours, m = d.inMinutes.remainder(60), s = d.inSeconds.remainder(60);
+    return h > 0 ? '$h:${m.toString().padLeft(2,'0')}:${s.toString().padLeft(2,'0')}' : '$m:${s.toString().padLeft(2,'0')}';
+  }
+
+  Future<void> _enhance() async {
+    final source = _path;
+    if (source == null || _enhancing || _width < 2 || _height < 2) return;
+    final longEdge = _width > _height ? _width : _height;
+    final shortEdge = _width < _height ? _width : _height;
+    final outShort = (shortEdge * _target / longEdge).round().clamp(2, 4096);
+    final outW = _width >= _height ? _target : outShort;
+    final outH = _width >= _height ? outShort : _target;
+    final output = '${Directory.systemTemp.path}/movie_${outW}x${outH}_${DateTime.now().microsecondsSinceEpoch}.mp4';
+    setState(() { _enhancing = true; _status = 'Preparing a clearer ${_target}p copy…'; _error = null; });
+    try {
+      await _player.pause();
+      final result = await _channel.invokeMethod<String>('enhanceVideo', {
+        'inputPath': source, 'outputPath': output, 'outputWidth': outW, 'outputHeight': outH,
+        'brightness': 0.025, 'contrast': 0.06, 'saturation': 0.035,
+      });
+      if (result == null || !await File(result).exists() || await File(result).length() == 0) throw StateError('No output video was created.');
+      try {
+        await _channel.invokeMethod('saveVideoToGallery', {'inputPath':result,'displayName':'Movie_${_target}p_${DateTime.now().millisecondsSinceEpoch}.mp4'});
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() { _path = result; _name = 'Enhanced copy · ${_target}p'; _width = outW; _height = outH; _status = 'Playing your new ${_target}p copy'; });
+      await _player.open(Media(result), play: true);
+      await _saveRecent(result, _name!);
+      _armControls();
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Could not improve this video: ${e.toString().replaceFirst('Exception: ','')}');
+    } finally {
+      if (mounted) setState(() => _enhancing = false);
     }
-    await _openMovie(path, name);
+  }
+
+  Widget _section(String title, {Widget? trailing}) => Padding(
+    padding: const EdgeInsets.fromLTRB(2, 22, 2, 10),
+    child: Row(children:[Expanded(child:Text(title,style:const TextStyle(fontSize:17,fontWeight:FontWeight.w800))),if(trailing!=null) trailing]),
+  );
+
+  Widget _posterRow(Map<String,String> movie, {bool recent = false}) {
+    final name = movie['name'] ?? 'Video';
+    return Padding(
+      padding: const EdgeInsets.only(bottom:10),
+      child: Material(
+        color: const Color(0xFF17181D),
+        borderRadius: BorderRadius.circular(17),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: _opening ? null : () => _open(movie['path']!, name),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(children:[
+              Container(width:76,height:68,decoration:BoxDecoration(color:const Color(0xFF252832),borderRadius:BorderRadius.circular(12)),child:Icon(recent?Icons.history_rounded:Icons.movie_creation_outlined,size:30,color:_accent)),
+              const SizedBox(width:12),
+              Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+                Text(name,maxLines:2,overflow:TextOverflow.ellipsis,style:const TextStyle(fontWeight:FontWeight.w700,fontSize:14)),
+                const SizedBox(height:5),
+                Text(recent?'Continue watching':'On this device',style:const TextStyle(color:Colors.white54,fontSize:11)),
+              ])),
+              const Icon(Icons.play_circle_fill_rounded,size:30),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _library() {
+    final q = _search.text.trim().toLowerCase();
+    final filtered = _videos.where((v)=>(v['name']??'').toLowerCase().contains(q)).toList();
+    return RefreshIndicator(
+      onRefresh: _scan,
+      child: ListView(padding:const EdgeInsets.fromLTRB(18,10,18,28),children:[
+        Row(children:[
+          Container(width:48,height:48,decoration:BoxDecoration(color:_accent.withValues(alpha:.16),borderRadius:BorderRadius.circular(15)),child:Icon(Icons.movie_filter_rounded,color:_accent,size:27)),
+          const SizedBox(width:12),
+          const Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+            Text('YOUR MOVIE LIBRARY',style:TextStyle(color:Colors.white54,fontSize:10,fontWeight:FontWeight.w800,letterSpacing:1.7)),
+            SizedBox(height:4),
+            Text('What shall we watch?',style:TextStyle(fontSize:23,fontWeight:FontWeight.w900,letterSpacing:-.6)),
+          ])),
+          IconButton(onPressed:_scanning?null:_scan,icon:const Icon(Icons.refresh_rounded)),
+        ]),
+        const SizedBox(height:17),
+        TextField(controller:_search,onChanged:(_)=>setState((){}),decoration:InputDecoration(hintText:'Search videos',prefixIcon:const Icon(Icons.search_rounded),filled:true,fillColor:const Color(0xFF17181D),border:OutlineInputBorder(borderRadius:BorderRadius.circular(16),borderSide:BorderSide.none))),
+        const SizedBox(height:12),
+        SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:_opening?null:_browse,icon:const Icon(Icons.folder_open_rounded),label:const Text('Browse videos'))),
+        _section('On this device',trailing:Text(_scanning?'Scanning…':'${filtered.length} videos',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
+        if (_scanning) const LinearProgressIndicator(),
+        if (filtered.isEmpty && !_scanning) Padding(padding:const EdgeInsets.symmetric(vertical:22),child:Text(q.isEmpty?'No videos found yet. Browse files to choose a video.':'No videos match your search.',style:const TextStyle(color:Colors.white54))),
+        for(final movie in filtered) _posterRow(movie),
+        if (_error!=null) Padding(padding:const EdgeInsets.only(top:12),child:Text(_error!,style:TextStyle(color:Theme.of(context).colorScheme.error))),
+      ]),
+    );
+  }
+
+  Widget _watch() {
+    return Column(children:[
+      Expanded(child:GestureDetector(
+        onTap:_armControls,
+        child:Container(color:Colors.black,width:double.infinity,child:Stack(fit:StackFit.expand,children:[
+          Center(child:Video(controller:_video,fit:BoxFit.contain)),
+          if (_showControls) ...[
+            Positioned(top:8,left:8,right:8,child:Row(children:[
+              IconButton(onPressed:_backToLibrary,icon:const Icon(Icons.arrow_back_rounded,color:Colors.white)),
+              Expanded(child:Text(_name??'',maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))),
+              IconButton(onPressed:()=>setState(()=>_speed=_speed==2?0.5:_speed+0.25),icon:Text('${_speed.toStringAsFixed(2)}×',style:const TextStyle(color:Colors.white,fontSize:12))),
+            ])),
+            Center(child:Row(mainAxisAlignment:MainAxisAlignment.center,children:[
+              IconButton(iconSize:35,onPressed:()=>_player.seek(_player.state.position-Duration(seconds:10)),icon:const Icon(Icons.replay_10_rounded,color:Colors.white)),
+              const SizedBox(width:24),
+              StreamBuilder<bool>(stream:_player.stream.playing,initialData:_player.state.playing,builder:(context,snap)=>IconButton(iconSize:62,onPressed:(){if(snap.data??false){_player.pause();}else{_player.play();}_armControls();},icon:Icon((snap.data??false)?Icons.pause_circle_filled_rounded:Icons.play_circle_fill_rounded,color:Colors.white))),
+              const SizedBox(width:24),
+              IconButton(iconSize:35,onPressed:()=>_player.seek(_player.state.position+Duration(seconds:10)),icon:const Icon(Icons.forward_10_rounded,color:Colors.white)),
+            ])),
+            Positioned(bottom:8,left:12,right:12,child:Column(children:[
+              StreamBuilder<Duration>(stream:_player.stream.position,initialData:_player.state.position,builder:(context,p)=>StreamBuilder<Duration>(stream:_player.stream.duration,initialData:_player.state.duration,builder:(context,d){
+                final duration=d.data??Duration.zero, pos=p.data??Duration.zero;
+                final max=duration.inMilliseconds.toDouble();
+                return Row(children:[Text(_time(pos),style:const TextStyle(color:Colors.white70,fontSize:11)),Expanded(child:Slider(value:max>0?pos.inMilliseconds.clamp(0,max.toInt()).toDouble():0,max:max>0?max:1,onChanged:max>0?(v)=>_player.seek(Duration(milliseconds:v.round())):null)),Text(_time(duration),style:const TextStyle(color:Colors.white70,fontSize:11))]);
+              })),
+            ])),
+          ],
+        ])),
+      )),
+      Container(color:const Color(0xFF111216),padding:const EdgeInsets.fromLTRB(16,12,16,16),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+        Row(children:[Expanded(child:Text(_name??'Now playing',maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(fontWeight:FontWeight.w800,fontSize:16))),if(_width>0)Text('${_width}×$_height',style:TextStyle(color:_accent,fontSize:11,fontWeight:FontWeight.w700))]),
+        const SizedBox(height:12),
+        Row(children:[
+          Expanded(child:OutlinedButton.icon(onPressed:()=>_showPlayerOptions(),icon:const Icon(Icons.tune_rounded),label:const Text('Player controls'))),
+          const SizedBox(width:10),
+          Expanded(child:FilledButton.icon(onPressed:_enhancing||_width<2?null:_showEnhancementOptions,icon:_enhancing?const SizedBox(width:16,height:16,child:CircularProgressIndicator(strokeWidth:2)):const Icon(Icons.auto_awesome_rounded),label:Text(_enhancing?'Improving…':'Improve video'))),
+        ]),
+        if(_enhancing) const Padding(padding:EdgeInsets.only(top:12),child:LinearProgressIndicator()),
+        if(_status!=null) Padding(padding:const EdgeInsets.only(top:8),child:Text(_status!,style:TextStyle(color:_accent,fontSize:12))),
+        if(_error!=null) Padding(padding:const EdgeInsets.only(top:8),child:Text(_error!,style:TextStyle(color:Theme.of(context).colorScheme.error,fontSize:12))),
+      ])),
+    ]);
+  }
+
+  Future<void> _showEnhancementOptions() async {
+    var selected = _target;
+    final result = await showModalBottomSheet<int>(context:context,backgroundColor:const Color(0xFF17181D),showDragHandle:true,builder:(ctx)=>StatefulBuilder(builder:(ctx,setSheet)=>SafeArea(child:Padding(padding:const EdgeInsets.fromLTRB(20,8,20,24),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.start,children:[
+      const Text('Make this video clearer',style:TextStyle(fontSize:21,fontWeight:FontWeight.w900)),
+      const SizedBox(height:6),
+      Text('Source: ${_width}×$_height. The original is kept; a new copy is created.',style:const TextStyle(color:Colors.white60,fontSize:12)),
+      const SizedBox(height:18),
+      Wrap(spacing:8,children:[for(final size in [480,720,1080,1440]) ChoiceChip(label:Text('${size}p'),selected:selected==size,onSelected:(_)=>setSheet(()=>selected=size))]),
+      const SizedBox(height:12),
+      const Text('Upscaling can make playback smoother and the image look cleaner, but cannot recover detail absent from the source.',style:TextStyle(color:Colors.white54,fontSize:12,height:1.45)),
+      const SizedBox(height:12),
+      SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:()=>Navigator.pop(ctx,selected),icon:const Icon(Icons.auto_awesome_rounded),label:const Text('Create clearer copy'))),
+    ])))));
+    if(result!=null&&mounted){setState(()=>_target=result);unawaited(_enhance());}
+  }
+
+  Future<void> _showPlayerOptions() async {
+    var speed = _speed;
+    final result = await showModalBottomSheet<double>(context:context,backgroundColor:const Color(0xFF17181D),showDragHandle:true,builder:(ctx)=>StatefulBuilder(builder:(ctx,setSheet)=>SafeArea(child:Padding(padding:const EdgeInsets.fromLTRB(20,8,20,24),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.start,children:[
+      const Text('Playback settings',style:TextStyle(fontSize:20,fontWeight:FontWeight.w800)),
+      const SizedBox(height:12),
+      const Text('Playback speed'),
+      Wrap(spacing:8,children:[for(final value in [0.5,0.75,1.0,1.25,1.5,2.0])ChoiceChip(label:Text('${value}×'),selected:speed==value,onSelected:(_)=>setSheet(()=>speed=value))]),
+      const SizedBox(height:10),
+      ListTile(leading:const Icon(Icons.subtitles_rounded),title:const Text('Load subtitles'),onTap:()async{Navigator.pop(ctx,speed);await _chooseSubtitle();}),
+      ListTile(leading:const Icon(Icons.audiotrack_rounded),title:const Text('Audio and subtitle tracks'),onTap:(){Navigator.pop(ctx,speed);unawaited(_showTracks());}),
+    ])))));
+    if(result!=null&&mounted){setState(()=>_speed=result);await _player.setRate(result);}
   }
 
   Future<void> _chooseSubtitle() async {
-    if (_fileName == null || _opening) return;
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['srt', 'ass', 'ssa', 'vtt'],
-        allowMultiple: false,
-        withData: false,
-      );
-      if (result == null || result.files.isEmpty || !mounted) return;
-      final path = result.files.single.path;
-      if (path == null || path.isEmpty) {
-        setState(() => _error = 'The subtitle file could not be accessed.');
-        return;
-      }
-      await _player.setSubtitleTrack(SubtitleTrack.uri(path));
-      if (mounted) {
-        setState(() => _subtitleMessage = 'Loaded: ${result.files.single.name}');
-      }
-    } catch (error) {
-      if (mounted) setState(() => _error = 'Could not load this subtitle file: $error');
-    }
+    final result=await FilePicker.platform.pickFiles(type:FileType.custom,allowedExtensions:const ['srt','ass','ssa','vtt'],withData:false);
+    final path=result?.files.singleOrNull?.path;
+    if(path==null)return;
+    try{await _player.setSubtitleTrack(SubtitleTrack.uri(path));if(mounted)setState(()=>_status='Subtitle loaded: ${result!.files.single.name}');}catch(e){if(mounted)setState(()=>_error='Could not load subtitles: $e');}
   }
 
-  Future<void> _showSleepTimerPicker() async {
-    final options = <int>[15, 30, 45, 60, 90, 120];
-    final selected = await showModalBottomSheet<int?>(
-      context: context,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Sleep timer', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 6),
-              const Text('Pause playback automatically after the selected time.', style: TextStyle(color: Colors.white60, fontSize: 12)),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final minutes in options)
-                    ActionChip(
-                      label: Text('$minutes min'),
-                      onPressed: () => Navigator.pop(sheetContext, minutes),
-                    ),
-                  ActionChip(
-                    avatar: const Icon(Icons.timer_off_outlined, size: 16),
-                    label: const Text('Turn off'),
-                    onPressed: () => Navigator.pop(sheetContext, 0),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (selected == null || !mounted) return;
-    _sleepTimer?.cancel();
-    if (selected == 0) {
-      setState(() => _sleepTimerLabel = null);
-      return;
-    }
-    setState(() => _sleepTimerLabel = '$selected min');
-    _sleepTimer = Timer(Duration(minutes: selected), () async {
-      try {
-        await _player.pause();
-      } catch (_) {}
-      if (mounted) setState(() => _sleepTimerLabel = null);
-    });
-  }
-
-  void _cycleABRepeat() {
-    final position = _player.state.position;
-    if (_repeatStart == null) {
-      setState(() {
-        _repeatStart = position;
-        _repeatEnd = null;
-        _playbackMessage = 'A–B repeat: start point set at ${_time(position)}. Seek to the end and tap A–B again.';
-      });
-      return;
-    }
-    if (_repeatEnd == null) {
-      if (position <= _repeatStart! + const Duration(seconds: 1)) {
-        setState(() => _playbackMessage = 'Move at least one second past point A before setting point B.');
-        return;
-      }
-      setState(() {
-        _repeatEnd = position;
-        _playbackMessage = 'Repeating ${_time(_repeatStart!)}–${_time(position)}. Tap A–B again to clear.';
-      });
-      _abRepeatTimer?.cancel();
-      _abRepeatTimer = Timer.periodic(const Duration(milliseconds: 250), (_) async {
-        if (!mounted || _abRepeatSeeking || !_player.state.playing || _repeatStart == null || _repeatEnd == null) return;
-        if (_player.state.position >= _repeatEnd!) {
-          _abRepeatSeeking = true;
-          try {
-            await _player.seek(_repeatStart!);
-          } finally {
-            _abRepeatSeeking = false;
-          }
-        }
-      });
-      return;
-    }
-    _abRepeatTimer?.cancel();
-    setState(() {
-      _repeatStart = null;
-      _repeatEnd = null;
-      _playbackMessage = 'A–B repeat cleared.';
-    });
-  }
-
-  Future<void> _showTrackPicker() async {
-    if (_fileName == null || _opening) return;
-    final audioTracks = _player.state.tracks.audio.where((track) => track.id != 'auto' && track.id != 'no').toList();
-    final subtitleTracks = _player.state.tracks.subtitle.where((track) => track.id != 'auto' && track.id != 'no').toList();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Audio & subtitles'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.only(top: 4, bottom: 6),
-                  child: Text('AUDIO TRACK', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.5, color: Colors.white60)),
-                ),
-                ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.auto_awesome_outlined),
-                  title: const Text('Automatic'),
-                  selected: _player.state.track.audio == AudioTrack.auto(),
-                  onTap: () {
-                    Navigator.pop(dialogContext);
-                    unawaited(_player.setAudioTrack(AudioTrack.auto()));
-                  },
-                ),
-                ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.volume_off_outlined),
-                  title: const Text('Mute audio track'),
-                  selected: _player.state.track.audio == AudioTrack.no(),
-                  onTap: () {
-                    Navigator.pop(dialogContext);
-                    unawaited(_player.setAudioTrack(AudioTrack.no()));
-                  },
-                ),
-                if (audioTracks.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 8),
-                    child: Text('No separate audio tracks detected.', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                  ),
-                for (var i = 0; i < audioTracks.length; i++)
-                  ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.audiotrack_rounded),
-                    title: Text(audioTracks[i].title?.trim().isNotEmpty == true ? audioTracks[i].title! : (audioTracks[i].language?.trim().isNotEmpty == true ? audioTracks[i].language! : 'Audio track ${i + 1}')),
-                    subtitle: audioTracks[i].codec == null ? null : Text(audioTracks[i].codec!, style: const TextStyle(fontSize: 11)),
-                    selected: _player.state.track.audio == audioTracks[i],
-                    onTap: () {
-                      final track = audioTracks[i];
-                      Navigator.pop(dialogContext);
-                      unawaited(_player.setAudioTrack(track));
-                    },
-                  ),
-                const Divider(height: 24),
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 6),
-                  child: Text('SUBTITLES', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.5, color: Colors.white60)),
-                ),
-                ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.auto_awesome_outlined),
-                  title: const Text('Automatic'),
-                  selected: _player.state.track.subtitle == SubtitleTrack.auto(),
-                  onTap: () {
-                    Navigator.pop(dialogContext);
-                    unawaited(_player.setSubtitleTrack(SubtitleTrack.auto()));
-                  },
-                ),
-                ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.subtitles_off_outlined),
-                  title: const Text('Subtitles off'),
-                  selected: _player.state.track.subtitle == SubtitleTrack.no(),
-                  onTap: () {
-                    Navigator.pop(dialogContext);
-                    unawaited(_player.setSubtitleTrack(SubtitleTrack.no()));
-                  },
-                ),
-                if (subtitleTracks.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 8),
-                    child: Text('No embedded subtitles detected. You can load an external subtitle file below.', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                  ),
-                for (var i = 0; i < subtitleTracks.length; i++)
-                  ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.subtitles_rounded),
-                    title: Text(subtitleTracks[i].title?.trim().isNotEmpty == true ? subtitleTracks[i].title! : (subtitleTracks[i].language?.trim().isNotEmpty == true ? subtitleTracks[i].language! : 'Subtitle track ${i + 1}')),
-                    subtitle: subtitleTracks[i].codec == null ? null : Text(subtitleTracks[i].codec!, style: const TextStyle(fontSize: 11)),
-                    selected: _player.state.track.subtitle == subtitleTracks[i],
-                    onTap: () {
-                      final track = subtitleTracks[i];
-                      Navigator.pop(dialogContext);
-                      unawaited(_player.setSubtitleTrack(track));
-                    },
-                  ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _chooseExternalAudio() async {
-    if (_fileName == null || _opening) return;
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['aac', 'm4a', 'mp3', 'ogg', 'opus', 'flac', 'wav', 'ac3', 'dts'],
-        allowMultiple: false,
-        withData: false,
-      );
-      if (result == null || result.files.isEmpty || !mounted) return;
-      final path = result.files.single.path;
-      if (path == null || path.isEmpty) {
-        setState(() => _error = 'The audio file could not be accessed.');
-        return;
-      }
-      await _player.setAudioTrack(AudioTrack.uri(path, title: result.files.single.name));
-      if (mounted) {
-        setState(() => _subtitleMessage = 'Loaded external audio: ${result.files.single.name}');
-      }
-    } catch (error) {
-      if (mounted) setState(() => _error = 'Could not load this audio track: $error');
-    }
-  }
-
-  List<double> _pictureMatrix(double brightness, double contrast, double saturation) {
-    final b = brightness / 255;
-    final c = 1 + contrast / 100;
-    final s = 1 + saturation / 100;
-    const r = 0.213, g = 0.715, bl = 0.072;
-    final sr = (1 - s) * r, sg = (1 - s) * g, sb = (1 - s) * bl;
-    return <double>[
-      (sr + s) * c, sg * c, sb * c, 0, (b + 0.5 - 0.5 * c) * 255,
-      sr * c, (sg + s) * c, sb * c, 0, (b + 0.5 - 0.5 * c) * 255,
-      sr * c, sg * c, (sb + s) * c, 0, (b + 0.5 - 0.5 * c) * 255,
-      0, 0, 0, 1, 0,
-    ];
-  }
-
-  String _time(Duration value) {
-    final seconds = value.inSeconds;
-    final hours = seconds ~/ 3600;
-    final minutes = (seconds % 3600) ~/ 60;
-    final remainder = seconds % 60;
-    if (hours > 0) {
-      return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${remainder.toString().padLeft(2, '0')}';
-    }
-    return '${minutes.toString().padLeft(2, '0')}:${remainder.toString().padLeft(2, '0')}';
-  }
-
-  Widget _libraryLanding(Color accent) {
-    final query = _libraryQuery.trim().toLowerCase();
-    final deviceMovies = _deviceMovies.where((movie) => (movie["name"] ?? "").toLowerCase().contains(query)).toList();
-    final recentMovies = _recentMovies.where((movie) => (movie["name"] ?? "").toLowerCase().contains(query)).toList();
-    return RefreshIndicator(
-      onRefresh: _loadDeviceMovies,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(18, 12, 18, 28),
-        children: [
-          Row(children: [
-            Container(
-              width: 48, height: 48,
-              decoration: BoxDecoration(color: accent.withValues(alpha: .14), borderRadius: BorderRadius.circular(16)),
-              child: Icon(Icons.movie_filter_rounded, color: accent, size: 28),
-            ),
-            const SizedBox(width: 12),
-            const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text("YOUR MOVIE LIBRARY", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white60)),
-              SizedBox(height: 3),
-              Text("Find something to watch", style: TextStyle(fontSize: 23, fontWeight: FontWeight.w800, letterSpacing: -.5)),
-            ])),
-            IconButton(tooltip: "Refresh library", onPressed: _scanningDevice ? null : _loadDeviceMovies, icon: const Icon(Icons.refresh_rounded)),
-          ]),
-          const SizedBox(height: 14),
-          TextField(
-            onChanged: (value) => setState(() => _libraryQuery = value),
-            decoration: InputDecoration(
-              hintText: "Search videos on your phone",
-              prefixIcon: const Icon(Icons.search_rounded),
-              suffixIcon: _libraryQuery.isEmpty ? null : IconButton(onPressed: () => setState(() => _libraryQuery = ""), icon: const Icon(Icons.close_rounded)),
-              isDense: true, filled: true,
-              fillColor: Theme.of(context).colorScheme.surface,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
-            ),
-          ),
-          const SizedBox(height: 14),
-          SizedBox(width: double.infinity, child: OutlinedButton.icon(
-            onPressed: _opening ? null : _chooseMovie,
-            icon: const Icon(Icons.folder_open_rounded),
-            label: const Text("Browse files"),
-          )),
-          const SizedBox(height: 22),
-          Row(children: [
-            const Expanded(child: Text("On this device", style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))),
-            Text(_scanningDevice ? "Scanning…" : "${_deviceMovies.length} videos", style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w700)),
-          ]),
-          const SizedBox(height: 8),
-          if (_scanningDevice) const LinearProgressIndicator(),
-          if (!_scanningDevice && deviceMovies.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 18),
-              child: Center(child: Text(
-                _deviceMovies.isEmpty ? "No videos found yet. Pull down to refresh or browse files." : "No videos match your search.",
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              )),
-            ),
-          if (deviceMovies.isNotEmpty)
-            Card(
-              margin: EdgeInsets.zero,
-              child: Column(children: [
-                for (var index = 0; index < deviceMovies.length; index++) ...[
-                  if (index > 0) const Divider(height: 1, indent: 58),
-                  ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
-                    leading: Container(
-                      width: 42, height: 42,
-                      decoration: BoxDecoration(color: accent.withValues(alpha: .12), borderRadius: BorderRadius.circular(12)),
-                      child: Icon(Icons.play_circle_outline_rounded, color: accent),
-                    ),
-                    title: Text(deviceMovies[index]["name"] ?? "Video", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: const Text("On device"),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: _opening ? null : () => _openRecentMovie(deviceMovies[index]),
-                  ),
-                ],
-              ]),
-            ),
-          if (recentMovies.isNotEmpty) ...[
-            const SizedBox(height: 22),
-            const Text("Recently played", style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
-            const SizedBox(height: 8),
-            Card(
-              margin: EdgeInsets.zero,
-              child: Column(children: [
-                for (var index = 0; index < recentMovies.length; index++) ...[
-                  if (index > 0) const Divider(height: 1, indent: 58),
-                  ListTile(
-                    leading: Icon(Icons.history_rounded, color: accent),
-                    title: Text(recentMovies[index]["name"] ?? "Video", maxLines: 1, overflow: TextOverflow.ellipsis),
-                    onTap: _opening ? null : () => _openRecentMovie(recentMovies[index]),
-                  ),
-                ],
-              ]),
-            ),
-          ],
-          if (_error != null) ...[
-            const SizedBox(height: 12),
-            Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12)),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Future<void> _seekBy(Duration delta) async {
-    final current = _player.state.position;
-    final duration = _player.state.duration;
-    final target = current + delta;
-    final bounded = target < Duration.zero
-        ? Duration.zero
-        : (target > duration ? duration : target);
-    await _player.seek(bounded);
+  Future<void> _showTracks() async {
+    final tracks=_player.state.tracks;
+    if(!mounted)return;
+    await showModalBottomSheet<void>(context:context,backgroundColor:const Color(0xFF17181D),showDragHandle:true,builder:(ctx)=>SafeArea(child:ListView(shrinkWrap:true,padding:const EdgeInsets.all(16),children:[
+      const Text('Audio tracks',style:TextStyle(fontSize:18,fontWeight:FontWeight.w800)),
+      for(final track in tracks.audio) ListTile(title:Text(track.title??track.language??'Audio track'),onTap:(){_player.setAudioTrack(track);Navigator.pop(ctx);}),
+      const Divider(),
+      const Text('Subtitle tracks',style:TextStyle(fontSize:18,fontWeight:FontWeight.w800)),
+      for(final track in tracks.subtitle) ListTile(title:Text(track.title??track.language??'Subtitle track'),onTap:(){_player.setSubtitleTrack(track);Navigator.pop(ctx);}),
+      ListTile(title:const Text('Subtitles off'),onTap:(){_player.setSubtitleTrack(SubtitleTrack.no());Navigator.pop(ctx);}),
+    ]))));
   }
 
   @override
-  Widget build(BuildContext context) {
-    final accent = Theme.of(context).colorScheme.primary;
-    final visibleRecentMovies = _recentMovies.where((movie) => (movie['name'] ?? '').toLowerCase().contains(_libraryQuery.trim().toLowerCase())).toList();
-    final landscapePlayback = MediaQuery.orientationOf(context) == Orientation.landscape && _fileName != null;
-    return Scaffold(
-      appBar: landscapePlayback ? null : AppBar(
-        leading: _fileName == null ? null : IconButton(
-          tooltip: 'Back to video library',
-          onPressed: _returnToLibrary,
-          icon: const Icon(Icons.arrow_back_rounded),
-        ),
-        title: Text(_fileName == null ? 'Movie Player' : 'Now playing'),
-        actions: [
-          IconButton(
-            tooltip: 'Play from internet',
-            onPressed: _opening ? null : _openNetworkStream,
-            icon: const Icon(Icons.public_rounded),
-          ),
-          IconButton(
-            tooltip: 'Open movie',
-            onPressed: _opening ? null : _chooseMovie,
-            icon: const Icon(Icons.folder_open_rounded),
-          ),
-          PopupMenuButton<String>(
-            tooltip: 'Player menu',
-            onSelected: (action) {
-              switch (action) {
-                case 'scan':
-                  unawaited(_loadDeviceMovies());
-                  break;
-                case 'tracks':
-                  unawaited(_showTrackPicker());
-                  break;
-                case 'picture':
-                  setState(() => _showPictureTuning = !_showPictureTuning);
-                  break;
-                case 'sleep':
-                  unawaited(_showSleepTimerPicker());
-                  break;
-                case 'subtitle':
-                  unawaited(_chooseSubtitle());
-                  break;
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'scan', child: Text('Refresh device library')),
-              PopupMenuItem(value: 'tracks', child: Text('Audio & subtitles')),
-              PopupMenuItem(value: 'subtitle', child: Text('Load subtitle')),
-              PopupMenuItem(value: 'picture', child: Text('Picture tuning')),
-              PopupMenuItem(value: 'sleep', child: Text('Sleep timer')),
-            ],
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: OrientationBuilder(
-          builder: (context, orientation) {
-            if (_fileName == null) return _libraryLanding(accent);
-            if (orientation == Orientation.landscape && _fileName != null) {
-              return ColoredBox(
-                color: Colors.black,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Center(
-                      child: ColorFiltered(
-                        colorFilter: ColorFilter.matrix(_pictureMatrix(_brightness, _contrast, _saturation)),
-                        child: Video(controller: _videoController, fit: BoxFit.contain),
-                      ),
-                    ),
-                    Positioned(
-                      top: 8,
-                      left: 12,
-                      right: 12,
-                      child: Row(
-                        children: [
-                          IconButton(
-                            tooltip: 'Back to library',
-                            onPressed: _returnToLibrary,
-                            icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-                          ),
-                          Expanded(
-                            child: Text(
-                              _fileName!,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
-                            ),
-                          ),
-                          IconButton(
-                            tooltip: 'Playback options',
-                            onPressed: _showTrackPicker,
-                            icon: const Icon(Icons.subtitles_rounded, color: Colors.white),
-                          ),
-                          IconButton(
-                            tooltip: 'Picture tuning',
-                            onPressed: () => setState(() => _showPictureTuning = !_showPictureTuning),
-                            icon: const Icon(Icons.tune_rounded, color: Colors.white),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Positioned(
-                      left: 16,
-                      right: 16,
-                      bottom: 8,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: .72),
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(color: Colors.white.withValues(alpha: .10)),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              StreamBuilder<Duration>(
-                                stream: _player.stream.position,
-                                initialData: _player.state.position,
-                                builder: (context, positionSnapshot) {
-                                  final position = positionSnapshot.data ?? Duration.zero;
-                                  return StreamBuilder<Duration>(
-                                    stream: _player.stream.duration,
-                                    initialData: _player.state.duration,
-                                    builder: (context, durationSnapshot) {
-                                      final duration = durationSnapshot.data ?? Duration.zero;
-                                      final maxMs = duration.inMilliseconds;
-                                      final currentMs = position.inMilliseconds.clamp(0, maxMs > 0 ? maxMs : 0);
-                                      return Row(
-                                        children: [
-                                          Text(_time(position), style: const TextStyle(color: Colors.white70, fontSize: 11)),
-                                          Expanded(
-                                            child: Slider(
-                                              value: maxMs > 0 ? currentMs.toDouble() : 0,
-                                              max: maxMs > 0 ? maxMs.toDouble() : 1,
-                                              onChanged: maxMs <= 0 || _controlsLocked ? null : (value) => unawaited(_player.seek(Duration(milliseconds: value.round()))),
-                                            ),
-                                          ),
-                                          Text(_time(duration), style: const TextStyle(color: Colors.white70, fontSize: 11)),
-                                        ],
-                                      );
-                                    },
-                                  );
-                                },
-                              ),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  IconButton(
-                                    tooltip: 'Back 10 seconds',
-                                    onPressed: () => unawaited(_seekBy(const Duration(seconds: -10))),
-                                    icon: const Icon(Icons.replay_10_rounded, color: Colors.white, size: 30),
-                                  ),
-                                  StreamBuilder<bool>(
-                                    stream: _player.stream.playing,
-                                    initialData: _player.state.playing,
-                                    builder: (context, snapshot) => IconButton.filled(
-                                      tooltip: snapshot.data == true ? 'Pause' : 'Play',
-                                      onPressed: () => unawaited(snapshot.data == true ? _player.pause() : _player.play()),
-                                      icon: Icon(snapshot.data == true ? Icons.pause_rounded : Icons.play_arrow_rounded),
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Forward 10 seconds',
-                                    onPressed: () => unawaited(_seekBy(const Duration(seconds: 10))),
-                                    icon: const Icon(Icons.forward_10_rounded, color: Colors.white, size: 30),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Text('×${_speed.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (_showPictureTuning)
-                      Positioned(
-                        right: 16,
-                        top: 64,
-                        child: SizedBox(
-                          width: 240,
-                          child: Card(
-                            color: const Color(0xFF171B19),
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Text('Picture tuning', style: TextStyle(fontWeight: FontWeight.w800)),
-                                  for (final setting in ['Brightness', 'Contrast', 'Saturation'])
-                                    Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(setting, style: const TextStyle(fontSize: 11, color: Colors.white70)),
-                                        Slider(
-                                          min: -50,
-                                          max: 50,
-                                          value: setting == 'Brightness' ? _brightness : setting == 'Contrast' ? _contrast : _saturation,
-                                          onChanged: (value) => setState(() {
-                                            if (setting == 'Brightness') _brightness = value;
-                                            if (setting == 'Contrast') _contrast = value;
-                                            if (setting == 'Saturation') _saturation = value;
-                                          }),
-                                        ),
-                                      ],
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            }
-            return ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: AspectRatio(
-                aspectRatio: 16 / 9,
-                child: Container(
-                  color: Colors.black,
-                  child: _fileName == null
-                      ? Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.movie_outlined, size: 54, color: accent),
-                              const SizedBox(height: 12),
-                              const Text('Choose a movie to start'),
-                              const SizedBox(height: 8),
-                              const Text(
-                                'MP4 · MKV · AVI · MOV · WebM and more',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.white54, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                        )
-                      : ColorFiltered(
-                          colorFilter: ColorFilter.matrix(_pictureMatrix(_brightness, _contrast, _saturation)),
-                          child: Video(controller: _videoController),
-                        ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    _fileName ?? 'No movie selected',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
-                  ),
-                ),
-                if (_opening)
-                  const Padding(
-                    padding: EdgeInsets.only(left: 12),
-                    child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            StreamBuilder<Duration>(
-              stream: _player.stream.position,
-              initialData: _player.state.position,
-              builder: (context, positionSnapshot) {
-                final position = positionSnapshot.data ?? Duration.zero;
-                return StreamBuilder<Duration>(
-                  stream: _player.stream.duration,
-                  initialData: _player.state.duration,
-                  builder: (context, durationSnapshot) {
-                    final duration = durationSnapshot.data ?? Duration.zero;
-                    final maxMs = duration.inMilliseconds;
-                    final positionMs = position.inMilliseconds.clamp(0, maxMs > 0 ? maxMs : 0);
-                    return Column(
-                      children: [
-                        Slider(
-                          value: maxMs > 0 ? positionMs.toDouble() : 0,
-                          max: maxMs > 0 ? maxMs.toDouble() : 1,
-                          activeColor: accent,
-                          onChanged: maxMs <= 0 || _controlsLocked ? null : (value) => _player.seek(Duration(milliseconds: value.round())),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(_time(position), style: const TextStyle(color: Colors.white60, fontSize: 11)),
-                              Text(_time(duration), style: const TextStyle(color: Colors.white60, fontSize: 11)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                );
-              },
-            ),
-            if (_playbackMessage != null) ...[
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(_playbackMessage!, style: TextStyle(color: accent, fontSize: 11, height: 1.4)),
-              ),
-              const SizedBox(height: 6),
-            ],
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                IconButton.filledTonal(
-                  tooltip: 'Back 10 seconds',
-                  onPressed: _fileName == null || _controlsLocked ? null : () => _seekBy(const Duration(seconds: -10)),
-                  icon: const Icon(Icons.replay_10_rounded),
-                ),
-                const SizedBox(width: 18),
-                StreamBuilder<bool>(
-                  stream: _player.stream.playing,
-                  initialData: _player.state.playing,
-                  builder: (context, snapshot) => IconButton.filled(
-                    tooltip: snapshot.data == true ? 'Pause' : 'Play',
-                    onPressed: _controlsLocked ? null : _fileName == null ? _chooseMovie : () => _player.playOrPause(),
-                    iconSize: 30,
-                    icon: Icon(snapshot.data == true ? Icons.pause_rounded : Icons.play_arrow_rounded),
-                  ),
-                ),
-                const SizedBox(width: 18),
-                IconButton.filledTonal(
-                  tooltip: 'Forward 10 seconds',
-                  onPressed: _fileName == null || _controlsLocked ? null : () => _seekBy(const Duration(seconds: 10)),
-                  icon: const Icon(Icons.forward_10_rounded),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _fileName == null || _opening ? null : _showTrackPicker,
-                icon: const Icon(Icons.audio_file_outlined),
-                label: const Text('Audio & subtitle tracks'),
-              ),
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _fileName == null || _opening ? null : _chooseSubtitle,
-                icon: const Icon(Icons.subtitles_outlined),
-                label: const Text('Load subtitle file'),
-              ),
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _fileName == null || _opening ? null : _chooseExternalAudio,
-                icon: const Icon(Icons.audiotrack_rounded),
-                label: const Text('Load external audio track'),
-              ),
-            ),
-            if (_subtitleMessage != null) ...[
-              const SizedBox(height: 5),
-              Text(_subtitleMessage!, style: const TextStyle(color: Colors.white60, fontSize: 11)),
-            ],
-            const SizedBox(height: 14),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [
-                    Icon(Icons.high_quality_rounded, color: accent),
-                    const SizedBox(width: 10),
-                    const Expanded(child: Text('Stream quality', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16))),
-                  ]),
-                  const SizedBox(height: 6),
-                  const Text('When a network stream provides multiple quality levels, playback quality is controlled by the stream source. Open a stream with the internet button above. Picture tuning works instantly during playback.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.45)),
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: _opening ? null : _openNetworkStream,
-                    icon: const Icon(Icons.public_rounded),
-                    label: const Text('Play from internet'),
-                  ),
-                ]),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(Icons.tune_rounded, color: accent),
-                        const SizedBox(width: 10),
-                        const Expanded(child: Text('Playback & picture', style: TextStyle(fontWeight: FontWeight.w800))),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        const Expanded(child: Text('Playback speed')),
-                        DropdownButton<double>(
-                          value: _speed,
-                          items: const [
-                            DropdownMenuItem(value: 0.5, child: Text('0.5×')),
-                            DropdownMenuItem(value: 0.75, child: Text('0.75×')),
-                            DropdownMenuItem(value: 1, child: Text('1.0×')),
-                            DropdownMenuItem(value: 1.25, child: Text('1.25×')),
-                            DropdownMenuItem(value: 1.5, child: Text('1.5×')),
-                            DropdownMenuItem(value: 2, child: Text('2.0×')),
-                          ],
-                          onChanged: _controlsLocked ? null : (value) {
-                            if (value == null) return;
-                            setState(() => _speed = value);
-                            unawaited(_player.setRate(value));
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        OutlinedButton.icon(
-                          onPressed: _showSleepTimerPicker,
-                          icon: const Icon(Icons.bedtime_outlined),
-                          label: Text(_sleepTimerLabel == null ? 'Sleep timer' : 'Sleep · $_sleepTimerLabel'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _fileName == null || _controlsLocked ? null : _cycleABRepeat,
-                          icon: Icon(_repeatEnd != null ? Icons.repeat_one_rounded : Icons.repeat_rounded),
-                          label: Text(_repeatStart == null ? 'A–B repeat' : _repeatEnd == null ? 'Set point B' : 'Clear A–B'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: () => setState(() => _controlsLocked = !_controlsLocked),
-                          icon: Icon(_controlsLocked ? Icons.lock_open_rounded : Icons.lock_outline_rounded),
-                          label: Text(_controlsLocked ? 'Unlock playback' : 'Lock playback'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Picture enhancement'),
-                      subtitle: const Text('Adjust brightness, contrast and colour while watching.'),
-                      value: _showPictureTuning,
-                      onChanged: (value) => setState(() => _showPictureTuning = value),
-                    ),
-                    if (_showPictureTuning) ...[
-                      _pictureSlider(
-                        label: 'Brightness',
-                        value: _brightness,
-                        accent: accent,
-                        onChanged: (value) {
-                          setState(() => _brightness = value);
-                        },
-                      ),
-                      _pictureSlider(
-                        label: 'Contrast',
-                        value: _contrast,
-                        accent: accent,
-                        onChanged: (value) {
-                          setState(() => _contrast = value);
-                        },
-                      ),
-                      _pictureSlider(
-                        label: 'Saturation',
-                        value: _saturation,
-                        accent: accent,
-                        onChanged: (value) {
-                          setState(() => _saturation = value);
-                        },
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: () {
-                            setState(() {
-                              _brightness = 0;
-                              _contrast = 0;
-                              _saturation = 0;
-                            });
-                          },
-                          child: const Text('Reset picture'),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'Playback uses a bundled libmpv-based engine with broad container and codec support. Smoothness depends on your device, codec and video resolution. Picture adjustments change appearance; they do not recreate detail missing from a low-quality source.',
-              style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.5),
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.errorContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer, fontSize: 12)),
-              ),
-            ],
-            if (_deviceMovies.isNotEmpty || _scanningDevice) ...[
-              Row(
-                children: [
-                  const Expanded(child: Text('On this device', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))),
-                  Text(_scanningDevice ? 'Scanning…' : '${_deviceMovies.length} videos', style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w700)),
-                  IconButton(
-                    tooltip: 'Refresh device videos',
-                    onPressed: _scanningDevice ? null : _loadDeviceMovies,
-                    icon: const Icon(Icons.refresh_rounded),
-                  ),
-                ],
-              ),
-              if (_deviceMovies.isEmpty && _scanningDevice)
-                const LinearProgressIndicator(),
-              if (_deviceMovies.isEmpty && !_scanningDevice)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 12),
-                  child: Text('No videos were found. Allow video access or choose a file from storage.', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                ),
-              Card(
-                child: Column(
-                  children: [
-                    for (var index = 0; index < _deviceMovies.where((movie) => (movie['name'] ?? '').toLowerCase().contains(_libraryQuery.trim().toLowerCase())).length; index++) ...[
-                      if (index > 0) const Divider(height: 1, indent: 56),
-                      Builder(builder: (context) {
-                        final visible = _deviceMovies.where((movie) => (movie['name'] ?? '').toLowerCase().contains(_libraryQuery.trim().toLowerCase())).toList();
-                        final movie = visible[index];
-                        return ListTile(
-                          leading: Icon(Icons.video_file_rounded, color: accent),
-                          title: Text(movie['name'] ?? 'Video', maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: const Text('Device video'),
-                          trailing: const Icon(Icons.play_circle_outline_rounded),
-                          onTap: _opening ? null : () => _openRecentMovie(movie),
-                        );
-                      }),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-            ],
-            if (_recentMovies.isNotEmpty) ...[
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  const Expanded(child: Text('Recently played', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))),
-                  Text('${_recentMovies.length} saved', style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w700)),
-                  const SizedBox(width: 4),
-                  TextButton(
-                    onPressed: _clearRecentMovies,
-                    child: const Text('Clear'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                onChanged: (value) => setState(() => _libraryQuery = value),
-                decoration: InputDecoration(
-                  hintText: 'Search your movies',
-                  prefixIcon: const Icon(Icons.search_rounded),
-                  isDense: true,
-                  filled: true,
-                  fillColor: Theme.of(context).colorScheme.surface,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Card(
-                child: Column(
-                  children: [
-                    if (visibleRecentMovies.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(18),
-                        child: Text('No movies match that search.', style: TextStyle(color: Colors.white60)),
-                      ),
-                    for (var index = 0; index < visibleRecentMovies.length; index++) ...[
-                      if (index > 0) const Divider(height: 1, indent: 56),
-                      ListTile(
-                        leading: Icon(Icons.movie_outlined, color: accent),
-                        title: Text(visibleRecentMovies[index]['name'] ?? 'Video', maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: const Text('Local file · resume playback'),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.play_arrow_rounded),
-                            PopupMenuButton<String>(
-                              tooltip: 'Movie history options',
-                              onSelected: (value) {
-                                if (value == 'remove') unawaited(_removeRecentMovie(visibleRecentMovies[index]));
-                              },
-                              itemBuilder: (context) => const [
-                                PopupMenuItem(value: 'remove', child: Text('Remove from history')),
-                              ],
-                            ),
-                          ],
-                        ),
-                        onTap: _opening ? null : () => _openRecentMovie(visibleRecentMovies[index]),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _opening ? null : _chooseMovie,
-                    icon: const Icon(Icons.folder_open_rounded),
-                    label: Text(_fileName == null ? 'Choose movie' : 'Open another'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _opening ? null : _addMoviesToLibrary,
-                    icon: const Icon(Icons.video_library_outlined),
-                    label: const Text('Add to library'),
-                  ),
-                ),
-              ],
-            ),
-          ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _pictureSlider({
-    required String label,
-    required double value,
-    required Color accent,
-    required ValueChanged<double> onChanged,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(label),
-            Text(value.round().toString(), style: TextStyle(color: accent, fontWeight: FontWeight.w700)),
-          ],
-        ),
-        Slider(
-          value: value,
-          min: -100,
-          max: 100,
-          divisions: 40,
-          activeColor: accent,
-          onChanged: onChanged,
-        ),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor:const Color(0xFF08090B),
+    appBar:_watching?null:AppBar(title:const Text('Movie Player',style:TextStyle(fontWeight:FontWeight.w800)),actions:[IconButton(onPressed:_browse,icon:const Icon(Icons.folder_open_rounded))]),
+    body:SafeArea(child:_watching?_watch():_library()),
+  );
 }
