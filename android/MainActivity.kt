@@ -3,6 +3,7 @@ package com.ptip.statushd
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import android.net.Uri
 import androidx.media3.common.MediaItem
@@ -38,6 +39,35 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+            if (call.method == "getVideoDimensions") {
+                val path = call.argument<String>("path")
+                if (path.isNullOrBlank() || !File(path).isFile) {
+                    result.error("invalid_video", "Choose a readable video file.", null)
+                    return@setMethodCallHandler
+                }
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(path)
+                    var width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                    var height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                    val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                    if (rotation == 90 || rotation == 270) {
+                        val swap = width
+                        width = height
+                        height = swap
+                    }
+                    if (width < 2 || height < 2) {
+                        result.error("invalid_dimensions", "Could not detect this video's dimensions.", null)
+                    } else {
+                        result.success(mapOf("width" to width, "height" to height))
+                    }
+                } catch (error: Exception) {
+                    result.error("metadata_failed", error.message ?: "Could not read video dimensions.", null)
+                } finally {
+                    retriever.release()
+                }
+                return@setMethodCallHandler
+            }
             if (call.method == "listDeviceVideos") {
                 val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     android.Manifest.permission.READ_MEDIA_VIDEO
