@@ -26,24 +26,11 @@ void main() {
     expect(find.text('Movie Player'), findsOneWidget);
     expect(find.text('Quality studio'), findsOneWidget);
 
-    // Be tolerant of small label changes (e.g. extra suffixes like "for Status").
-    expect(
-      find.byWidgetPredicate(
-        (w) {
-          if (w is Text) {
-            final s = (w.data ?? '').toLowerCase();
-            return s.contains('trim') && s.contains('split');
-          }
-          if (w is RichText) {
-            final txt = w.text.toPlainText().toLowerCase();
-            return txt.contains('trim') && txt.contains('split');
-          }
-          return false;
-        },
-        description: 'Text widget containing "trim" and "split"',
-      ),
-      findsOneWidget,
-    );
+    // The trim/split card is lower in the scrollable tools list and may not
+    // be mounted until it is brought into view.
+    final trimSplit = find.text('Trim & split');
+    await tester.scrollUntilVisible(trimSplit, 300);
+    expect(trimSplit, findsOneWidget);
 
     expect(find.text('Theme mode'), findsNothing);
     expect(find.text('Navigation style'), findsNothing);
