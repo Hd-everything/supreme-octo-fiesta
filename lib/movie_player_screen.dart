@@ -350,7 +350,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       const Text('Subtitle tracks',style:TextStyle(fontSize:18,fontWeight:FontWeight.w800)),
       for(final track in tracks.subtitle) ListTile(title:Text(track.title??track.language??'Subtitle track'),onTap:(){_player.setSubtitleTrack(track);Navigator.pop(ctx);}),
       ListTile(title:const Text('Subtitles off'),onTap:(){_player.setSubtitleTrack(SubtitleTrack.no());Navigator.pop(ctx);}),
-    ]))));
+    ])));
   }
 
   @override
