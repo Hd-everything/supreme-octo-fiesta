@@ -17,7 +17,7 @@ void main() {
     expect(find.text('Tools'), findsOneWidget);
     expect(find.text('Settings'), findsNothing);
     expect(find.byTooltip('Open movie player'), findsOneWidget);
-    expect(find.text('Movie player'), findsOneWidget);
+    expect(find.text('Movie Player'), findsOneWidget);
 
     await tester.tap(find.text('Tools'));
     await tester.pumpAndSettle();
