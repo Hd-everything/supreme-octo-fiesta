@@ -703,6 +703,111 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     return '${minutes.toString().padLeft(2, '0')}:${remainder.toString().padLeft(2, '0')}';
   }
 
+  Widget _libraryLanding(Color accent) {
+    final query = _libraryQuery.trim().toLowerCase();
+    final deviceMovies = _deviceMovies.where((movie) => (movie["name"] ?? "").toLowerCase().contains(query)).toList();
+    final recentMovies = _recentMovies.where((movie) => (movie["name"] ?? "").toLowerCase().contains(query)).toList();
+    return RefreshIndicator(
+      onRefresh: _loadDeviceMovies,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(18, 12, 18, 28),
+        children: [
+          Row(children: [
+            Container(
+              width: 48, height: 48,
+              decoration: BoxDecoration(color: accent.withValues(alpha: .14), borderRadius: BorderRadius.circular(16)),
+              child: Icon(Icons.movie_filter_rounded, color: accent, size: 28),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text("YOUR MOVIE LIBRARY", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white60)),
+              SizedBox(height: 3),
+              Text("Pick a video to watch", style: TextStyle(fontSize: 23, fontWeight: FontWeight.w800, letterSpacing: -.5)),
+            ])),
+            IconButton(tooltip: "Refresh library", onPressed: _scanningDevice ? null : _loadDeviceMovies, icon: const Icon(Icons.refresh_rounded)),
+          ]),
+          const SizedBox(height: 14),
+          TextField(
+            onChanged: (value) => setState(() => _libraryQuery = value),
+            decoration: InputDecoration(
+              hintText: "Search videos on your phone",
+              prefixIcon: const Icon(Icons.search_rounded),
+              suffixIcon: _libraryQuery.isEmpty ? null : IconButton(onPressed: () => setState(() => _libraryQuery = ""), icon: const Icon(Icons.close_rounded)),
+              isDense: true, filled: true,
+              fillColor: Theme.of(context).colorScheme.surface,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(width: double.infinity, child: OutlinedButton.icon(
+            onPressed: _opening ? null : _chooseMovie,
+            icon: const Icon(Icons.folder_open_rounded),
+            label: const Text("Browse files"),
+          )),
+          const SizedBox(height: 22),
+          Row(children: [
+            const Expanded(child: Text("On this device", style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))),
+            Text(_scanningDevice ? "Scanning…" : "${_deviceMovies.length} videos", style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w700)),
+          ]),
+          const SizedBox(height: 8),
+          if (_scanningDevice) const LinearProgressIndicator(),
+          if (!_scanningDevice && deviceMovies.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 18),
+              child: Center(child: Text(
+                _deviceMovies.isEmpty ? "No videos found yet. Pull down to refresh or browse files." : "No videos match your search.",
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              )),
+            ),
+          if (deviceMovies.isNotEmpty)
+            Card(
+              margin: EdgeInsets.zero,
+              child: Column(children: [
+                for (var index = 0; index < deviceMovies.length; index++) ...[
+                  if (index > 0) const Divider(height: 1, indent: 58),
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+                    leading: Container(
+                      width: 42, height: 42,
+                      decoration: BoxDecoration(color: accent.withValues(alpha: .12), borderRadius: BorderRadius.circular(12)),
+                      child: Icon(Icons.play_circle_outline_rounded, color: accent),
+                    ),
+                    title: Text(deviceMovies[index]["name"] ?? "Video", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: const Text("On device"),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: _opening ? null : () => _openRecentMovie(deviceMovies[index]),
+                  ),
+                ],
+              ]),
+            ),
+          if (recentMovies.isNotEmpty) ...[
+            const SizedBox(height: 22),
+            const Text("Recently played", style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Card(
+              margin: EdgeInsets.zero,
+              child: Column(children: [
+                for (var index = 0; index < recentMovies.length; index++) ...[
+                  if (index > 0) const Divider(height: 1, indent: 58),
+                  ListTile(
+                    leading: Icon(Icons.history_rounded, color: accent),
+                    title: Text(recentMovies[index]["name"] ?? "Video", maxLines: 1, overflow: TextOverflow.ellipsis),
+                    onTap: _opening ? null : () => _openRecentMovie(recentMovies[index]),
+                  ),
+                ],
+              ]),
+            ),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 12),
+            Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12)),
+          ],
+        ],
+      ),
+    );
+  }
+
   Future<void> _seekBy(Duration delta) async {
     final current = _player.state.position;
     final duration = _player.state.duration;
