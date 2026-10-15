@@ -1022,9 +1022,9 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 20),
               Row(
                 children: [
-                  Expanded(child: _statCard(Icons.image_outlined, 'Original file', 'No re-encode', accent)),
+                  Expanded(child: _statCard(Icons.image_outlined, 'Original file', 'Left untouched', accent)),
                   const SizedBox(width: 10),
-                  Expanded(child: _statCard(Icons.ios_share_rounded, 'Share', 'When ready', accent)),
+                  Expanded(child: _statCard(Icons.high_quality_rounded, 'Processed copy', 'Preview first', accent)),
                 ],
               ),
               if (_message != null) ...[
@@ -1038,9 +1038,9 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 20),
               const Text('HOW IT WORKS', style: TextStyle(fontSize: 11, letterSpacing: 1.8, fontWeight: FontWeight.w800, color: Colors.white54)),
               const SizedBox(height: 12),
-              _stepRow('01', 'Choose media', 'Pick a photo or video from your library.', accent),
-              _stepRow('02', 'Check the original', 'Status HD shares the selected file without intentionally re-encoding it.', accent),
-              _stepRow('03', 'Send to WhatsApp', 'Choose WhatsApp in the system share sheet.', accent),
+              _stepRow('01', 'Choose a video', 'Status HD detects the source dimensions and format.', accent),
+              _stepRow('02', 'Process a new copy', 'Choose the output resolution; Status HD rescales and re-encodes the video on this device.', accent),
+              _stepRow('03', 'Review the result', 'Watch the encoded preview here, then save or share the processed copy.', accent),
               const SizedBox(height: 14),
               const Text('Note: WhatsApp can still resize or recompress media after you share it.', style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.5)),
             ]),
@@ -1088,7 +1088,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Text('Status quality studio', style: TextStyle(fontWeight: FontWeight.w800)),
             SizedBox(height: 3),
-            Text('Detect source first · choose Auto or a target quality', style: TextStyle(fontSize: 11, color: Colors.white60)),
+            Text('Detect the source · choose a resolution · encode and review the result', style: TextStyle(fontSize: 11, color: Colors.white60)),
           ],
         )),
       ],
