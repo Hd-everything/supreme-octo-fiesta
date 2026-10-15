@@ -256,9 +256,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _exportEstimateMessage;
   bool _cancelExportRequested = false;
   double _enhanceProgress = 0;
-  double _brightnessBoost = 0.06;
-  double _contrastBoost = 0.12;
-  double _saturationBoost = 8;
+  double _brightnessBoost = 0.09;
+  double _contrastBoost = 0.18;
+  double _saturationBoost = 14;
   XFile? _enhancedVideo;
 
   bool get _isVideo {
