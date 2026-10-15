@@ -943,14 +943,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openMoviePlayer() async {
-    final selected = _selected;
-    final hasSelectedVideo = selected != null && _isVideo;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => MoviePlayerScreen(
-          initialPath: hasSelectedVideo ? selected.path : null,
-          initialName: hasSelectedVideo ? selected.name : null,
-        ),
+        builder: (_) => const MoviePlayerScreen(),
       ),
     );
   }
