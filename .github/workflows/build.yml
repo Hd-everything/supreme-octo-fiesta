@@ -92,20 +92,30 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-          for name in ("build.gradle.kts", "build.gradle"):
-              gradle = Path("/tmp/statushd/android/app") / name
-              if not gradle.exists():
-                  continue
-              source = gradle.read_text()
-              if name.endswith(".kts"):
-                  source = source.replace("ndkVersion = flutter.ndkVersion", 'ndkVersion = "28.2.13676358"')
-                  count = int(source != gradle.read_text())
-              else:
-                  source = source.replace("ndkVersion flutter.ndkVersion", 'ndkVersion "28.2.13676358"')
-                  count = int(source != gradle.read_text())
-              if count:
-                  gradle.write_text(source)
-              break
+          root = Path("/tmp/statushd/android/app")
+          candidates = [root / "build.gradle.kts", root / "build.gradle"]
+          gradle = next((path for path in candidates if path.exists()), None)
+          if gradle is None:
+              raise SystemExit("Generated Android app Gradle file was not found")
+          source = gradle.read_text()
+          if gradle.suffix == ".kts":
+              updated, count = re.subn(
+                  r'ndkVersion\s*=\s*(?:flutter\.ndkVersion|"[^"]+"|\d+(?:\.\d+)+)',
+                  'ndkVersion = "28.2.13676358"',
+                  source,
+                  count=1,
+              )
+          else:
+              updated, count = re.subn(
+                  r'ndkVersion\s+(?:flutter\.ndkVersion|"[^"]+"|\d+(?:\.\d+)+)',
+                  'ndkVersion "28.2.13676358"',
+                  source,
+                  count=1,
+              )
+          if count == 0:
+              raise SystemExit("Could not pin NDK version in generated Gradle file")
+          gradle.write_text(updated)
+          print(f"Pinned NDK in {gradle} to 28.2.13676358")
           PY
 
       - name: Add Media3 video processing dependencies
@@ -113,22 +123,28 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-          gradle = Path("/tmp/statushd/android/app/build.gradle.kts")
-          if not gradle.exists():
-              gradle = Path("/tmp/statushd/android/app/build.gradle")
+          root = Path("/tmp/statushd/android/app")
+          gradle = next((p for p in (root / "build.gradle.kts", root / "build.gradle") if p.exists()), None)
+          if gradle is None:
+              raise SystemExit("Generated Android app Gradle file was not found")
           source = gradle.read_text()
-          if "androidx.media3:media3-transformer" not in source:
-              dependency_lines = '''
-              implementation("androidx.media3:media3-transformer:1.5.1")
-              implementation("androidx.media3:media3-effect:1.5.1")
-              '''
-              match = re.search(r"dependencies\s*\{", source)
-              if match:
-                  insert_at = match.end()
-                  source = source[:insert_at] + dependency_lines + source[insert_at:]
+          dependencies = (
+              ("androidx.media3:media3-transformer", "androidx.media3:media3-effect")
+          )
+          if not all(dep in source for dep in dependencies):
+              if gradle.suffix == ".kts":
+                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n'
+                  pattern = r"dependencies\\s*\\{"
               else:
-                  source += "\ndependencies {\n" + dependency_lines + "\n}\n"
+                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n'
+                  pattern = r"dependencies\\s*\\{"
+              match = re.search(pattern, source)
+              if match:
+                  source = source[:match.end()] + lines + source[match.end():]
+              else:
+                  source += "\ndependencies {\n" + lines + "\n}\n"
               gradle.write_text(source)
+          print(f"Media3 dependencies verified in {gradle}")
           PY
 
       - name: Install Android NDK with retry
