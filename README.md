@@ -35,10 +35,10 @@ Open the repository's **Actions** tab, select **Build Status HD**, and download 
 
 The workflow signs the release APK with a keystore stored only in GitHub Actions repository secrets. Configure these secrets before triggering it:
 
-- `ANDROID_KEYSTORE_BASE64`: Base64-encoded contents of the release `.jks` or `.keystore` file.
-- `ANDROID_KEYSTORE_PASSWORD`: Keystore password.
-- `ANDROID_KEY_ALIAS`: Signing-key alias.
-- `ANDROID_KEY_PASSWORD`: Signing-key password.
+- `KEYSTORE_BASE64`: Base64-encoded contents of the release `.jks` or `.keystore` file.
+- `KEYSTORE_PASSWORD`: Keystore password.
+- `KEY_ALIAS`: Signing-key alias.
+- `KEY_PASSWORD`: Signing-key password.
 
 For example, create the first value locally with `base64 -w 0 release.keystore` on GNU/Linux, or `[Convert]::ToBase64String([IO.File]::ReadAllBytes('release.keystore'))` in PowerShell. Never commit the keystore or its passwords.
 
