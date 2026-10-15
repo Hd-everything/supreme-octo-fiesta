@@ -39,11 +39,8 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   List<Map<String, String>> _recentMovies = <Map<String, String>>[];
   List<Map<String, String>> _deviceMovies = <Map<String, String>>[];
   bool _scanningDevice = false;
-  bool _processingOutput = false;
-  int _targetLongEdge = 1920;
   int _sourceWidth = 0;
   int _sourceHeight = 0;
-  String? _processingMessage;
   String _libraryQuery = '';
   String? _error;
   bool _opening = false;
@@ -250,6 +247,58 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     }
   }
 
+  Future<void> _openNetworkStream() async {
+    final controller = TextEditingController();
+    final uri = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Play from internet'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            hintText: 'https://…',
+            labelText: 'Video or stream URL',
+            helperText: 'Use a direct video URL or a compatible HLS/DASH stream.',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, controller.text.trim()), child: const Text('Play')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (uri == null || uri.isEmpty || !mounted) return;
+    final parsed = Uri.tryParse(uri);
+    if (parsed == null || !parsed.hasScheme || !{'http', 'https'}.contains(parsed.scheme.toLowerCase()) || parsed.host.isEmpty) {
+      setState(() => _error = 'Enter a valid HTTP or HTTPS video/stream URL.');
+      return;
+    }
+    try {
+      await _persistPlaybackPosition();
+      _resumeTimer?.cancel();
+      setState(() {
+        _opening = true;
+        _error = null;
+        _fileName = parsed.pathSegments.isEmpty ? parsed.host : Uri.decodeComponent(parsed.pathSegments.last);
+        _currentPath = null;
+        _sourceWidth = 0;
+        _sourceHeight = 0;
+        _playbackMessage = 'Internet stream · available quality levels depend on the source.';
+        _subtitleMessage = null;
+      });
+      await _player.open(Media(uri), play: true);
+      if (mounted) setState(() => _opening = false);
+    } catch (error) {
+      if (mounted) setState(() {
+        _opening = false;
+        _error = 'Could not open this stream: $error';
+      });
+    }
+  }
+
   Future<void> _chooseMovie() async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -340,61 +389,6 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   }
 
 
-  Future<void> _processAndPlayOutput() async {
-    final path = _currentPath;
-    if (path == null || _processingOutput || _sourceWidth < 2 || _sourceHeight < 2) return;
-    final longEdge = _sourceWidth > _sourceHeight ? _sourceWidth : _sourceHeight;
-    final shortEdge = _sourceWidth < _sourceHeight ? _sourceWidth : _sourceHeight;
-    final outputLongEdge = _targetLongEdge;
-    final outputShortEdge = (shortEdge * outputLongEdge / longEdge).round();
-    final outputWidth = _sourceWidth >= _sourceHeight ? outputLongEdge : outputShortEdge;
-    final outputHeight = _sourceWidth >= _sourceHeight ? outputShortEdge : outputLongEdge;
-    final outputPath = "${Directory.systemTemp.path}/movieplayer_${outputWidth}x${outputHeight}_${DateTime.now().microsecondsSinceEpoch}.mp4";
-    setState(() {
-      _processingOutput = true;
-      _processingMessage = "Preparing ${outputWidth}×${outputHeight} output…";
-      _error = null;
-    });
-    try {
-      await _player.pause();
-      final processedPath = await const MethodChannel("com.ptip.statushd/media").invokeMethod<String>("enhanceVideo", {
-        "inputPath": path,
-        "outputPath": outputPath,
-        "outputWidth": outputWidth,
-        "outputHeight": outputHeight,
-        "brightness": 0.0,
-        "contrast": 0.0,
-        "saturation": 0.0,
-      });
-      if (processedPath == null || !await File(processedPath).exists() || await File(processedPath).length() == 0) {
-        throw StateError("The encoder did not produce a valid output file.");
-      }
-      try {
-        await const MethodChannel("com.ptip.statushd/media").invokeMethod<String>("saveVideoToGallery", {
-          "inputPath": processedPath,
-          "displayName": "MoviePlayer_${outputWidth}x${outputHeight}_${DateTime.now().millisecondsSinceEpoch}.mp4",
-        });
-      } catch (_) {
-        // Continue into playback if Gallery saving is unavailable.
-      }
-      if (!mounted) return;
-      setState(() => _processingMessage = "Encoded ${outputWidth}×${outputHeight}. Opening the processed copy…");
-      await _openMovie(processedPath, File(processedPath).uri.pathSegments.last);
-      if (mounted) {
-        setState(() {
-          _processingMessage = "Now playing the re-encoded ${outputWidth}×${outputHeight} copy.";
-          _sourceWidth = outputWidth;
-          _sourceHeight = outputHeight;
-        });
-      }
-      unawaited(_loadDeviceMovies());
-    } catch (error) {
-      if (mounted) setState(() => _error = "Could not process this video: ${error.toString().replaceFirst('Exception: ', '')}");
-    } finally {
-      if (mounted) setState(() => _processingOutput = false);
-    }
-  }
-
   void _returnToLibrary() {
     unawaited(_player.stop());
     setState(() {
@@ -402,7 +396,6 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       _currentPath = null;
       _sourceWidth = 0;
       _sourceHeight = 0;
-      _processingMessage = null;
       _error = null;
     });
     unawaited(_loadDeviceMovies());
@@ -722,7 +715,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
             const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text("YOUR MOVIE LIBRARY", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white60)),
               SizedBox(height: 3),
-              Text("Pick a video to watch", style: TextStyle(fontSize: 23, fontWeight: FontWeight.w800, letterSpacing: -.5)),
+              Text("Find something to watch", style: TextStyle(fontSize: 23, fontWeight: FontWeight.w800, letterSpacing: -.5)),
             ])),
             IconButton(tooltip: "Refresh library", onPressed: _scanningDevice ? null : _loadDeviceMovies, icon: const Icon(Icons.refresh_rounded)),
           ]),
@@ -832,6 +825,11 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         ),
         title: Text(_fileName == null ? 'Movie Player' : 'Now playing'),
         actions: [
+          IconButton(
+            tooltip: 'Play from internet',
+            onPressed: _opening ? null : _openNetworkStream,
+            icon: const Icon(Icons.public_rounded),
+          ),
           IconButton(
             tooltip: 'Open movie',
             onPressed: _opening ? null : _chooseMovie,
@@ -1194,39 +1192,16 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                   Row(children: [
                     Icon(Icons.high_quality_rounded, color: accent),
                     const SizedBox(width: 10),
-                    const Expanded(child: Text('Rescale & re-encode', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16))),
-                    if (_sourceWidth > 0 && _sourceHeight > 0)
-                      Text('${_sourceWidth}×${_sourceHeight}', style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w700)),
+                    const Expanded(child: Text('Stream quality', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16))),
                   ]),
                   const SizedBox(height: 6),
-                  const Text('Choose an output resolution. The player will prepare and encode a new copy, then play that copy here.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.4)),
-                  const SizedBox(height: 12),
-                  SegmentedButton<int>(
-                    segments: const [
-                      ButtonSegment(value: 854, label: Text('480p')),
-                      ButtonSegment(value: 1280, label: Text('720p')),
-                      ButtonSegment(value: 1920, label: Text('1080p')),
-                      ButtonSegment(value: 2560, label: Text('1440p')),
-                    ],
-                    selected: {_targetLongEdge},
-                    onSelectionChanged: _processingOutput ? null : (values) => setState(() => _targetLongEdge = values.first),
-                    showSelectedIcon: false,
+                  const Text('When a network stream provides multiple quality levels, playback quality is controlled by the stream source. Open a stream with the internet button above. Picture tuning works instantly during playback.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.45)),
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: _opening ? null : _openNetworkStream,
+                    icon: const Icon(Icons.public_rounded),
+                    label: const Text('Play from internet'),
                   ),
-                  const SizedBox(height: 12),
-                  SizedBox(width: double.infinity, child: FilledButton.icon(
-                    onPressed: _processingOutput || _opening || _sourceWidth < 2 || _sourceHeight < 2 ? null : _processAndPlayOutput,
-                    icon: _processingOutput ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.high_quality_rounded),
-                    label: Text(_processingOutput ? 'Processing & encoding…' : 'Process & play at ${_targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 1920 ? '1080p' : '1440p'}'),
-                  )),
-                  if (_processingOutput) ...[
-                    const SizedBox(height: 10),
-                    const LinearProgressIndicator(),
-                    const SizedBox(height: 5),
-                    Text(_processingMessage ?? 'Preparing video frames and re-encoding on this device…', style: const TextStyle(color: Colors.white60, fontSize: 11)),
-                  ] else if (_processingMessage != null) ...[
-                    const SizedBox(height: 8),
-                    Text(_processingMessage!, style: TextStyle(color: accent, fontSize: 11)),
-                  ],
                 ]),
               ),
             ),
