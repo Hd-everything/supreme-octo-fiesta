@@ -37,12 +37,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          check-latest: true
-
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -91,6 +85,25 @@ jobs:
               if count == 0:
                   raise SystemExit("Could not set compileSdk in generated Gradle file")
               gradle.write_text(updated)
+          PY
+
+      - name: Align generated Android NDK with installed toolchain
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for name in ("build.gradle.kts", "build.gradle"):
+              gradle = Path("/tmp/statushd/android/app") / name
+              if not gradle.exists():
+                  continue
+              source = gradle.read_text()
+              if name.endswith(".kts"):
+                  source, count = re.subn(r'ndkVersion\\s*=\\s*flutter\\.ndkVersion', 'ndkVersion = "28.2.13676358"', source, count=1)
+              else:
+                  source, count = re.subn(r'ndkVersion\\s+flutter\\.ndkVersion', 'ndkVersion "28.2.13676358"', source, count=1)
+              if count:
+                  gradle.write_text(source)
+              break
           PY
 
       - name: Add Media3 video processing dependencies
