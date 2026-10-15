@@ -245,6 +245,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _message;
   int _tab = 0;
   VideoPlayerController? _videoController;
+  VideoPlayerController? _enhancedPreviewController;
   double _trimStart = 0;
   double? _trimEnd;
   bool _exporting = false;
@@ -270,6 +271,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _videoController?.dispose();
+    _enhancedPreviewController?.dispose();
     super.dispose();
   }
 
@@ -278,7 +280,9 @@ class _HomeScreenState extends State<HomeScreen> {
       final file = await _picker.pickMedia();
       if (file == null || !mounted) return;
       await _videoController?.dispose();
+      await _enhancedPreviewController?.dispose();
       _videoController = null;
+      _enhancedPreviewController = null;
       setState(() {
         _selected = file;
         _message = null;
@@ -395,33 +399,22 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       final actualLength = await File(processedPath).length();
       if (actualLength == 0) throw StateError('The processed video is empty.');
-      var savedToDevice = false;
-      if (Platform.isAndroid) {
-        try {
-          await _mediaChannel.invokeMethod<String>('saveVideoToGallery', {
-            'inputPath': processedPath,
-            'displayName': 'StatusHD_${outputWidth}x${outputHeight}_${DateTime.now().millisecondsSinceEpoch}.mp4',
-          });
-          savedToDevice = true;
-        } catch (_) {
-          // Playback can still continue if Gallery saving is unavailable.
-        }
+      await _enhancedPreviewController?.dispose();
+      final previewController = VideoPlayerController.file(File(processedPath));
+      await previewController.initialize();
+      await previewController.setLooping(true);
+      await previewController.play();
+      if (!mounted) {
+        await previewController.dispose();
+        return;
       }
-      if (!mounted) return;
       setState(() {
         _enhancedVideo = XFile(processedPath, mimeType: 'video/mp4');
-        _message = 'Encoded output: $outputWidth×$outputHeight · ${_formatBytes(actualLength)}.${savedToDevice ? ' Saved to Movies/Status HD.' : ''} Opening Movie Player.';
-        _exportEstimateMessage = 'Output: ${outputWidth}×${outputHeight} · ${_formatBytes(actualLength)}';
+        _enhancedPreviewController = previewController;
+        _message = 'Processed output ready: ${outputWidth}×${outputHeight} · ${_formatBytes(actualLength)}. Review it below.';
+        _exportEstimateMessage = 'Encoded output: ${outputWidth}×${outputHeight} · ${_formatBytes(actualLength)}';
         _enhanceProgress = 1;
       });
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => MoviePlayerScreen(
-            initialPath: processedPath,
-            initialName: File(processedPath).uri.pathSegments.last,
-          ),
-        ),
-      );
     } catch (error) {
       if (mounted) setState(() => _message = _cancelExportRequested
           ? 'Export cancelled. The original video is unchanged.'
@@ -433,11 +426,61 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _previewEnhancedVideo() async {
+    final controller = _enhancedPreviewController;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (controller.value.isPlaying) {
+      await controller.pause();
+    } else {
+      await controller.play();
+    }
+    if (mounted) setState(() {});
+  }
+
+  Widget _processedOutputPreview(Color accent) {
     final file = _enhancedVideo;
-    if (file == null) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => MoviePlayerScreen(initialPath: file.path, initialName: file.name),
+    final controller = _enhancedPreviewController;
+    if (file == null || controller == null || !controller.value.isInitialized) return const SizedBox.shrink();
+    final width = controller.value.size.width.round();
+    final height = controller.value.size.height.round();
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.verified_rounded, color: accent),
+            const SizedBox(width: 8),
+            const Expanded(child: Text('PROCESSED OUTPUT', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.4))),
+            Text('$width×$height', style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.w800)),
+          ]),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: AspectRatio(
+              aspectRatio: controller.value.aspectRatio > 0 ? controller.value.aspectRatio : 16 / 9,
+              child: Stack(alignment: Alignment.center, children: [
+                VideoPlayer(controller),
+                IconButton.filled(
+                  onPressed: _previewEnhancedVideo,
+                  iconSize: 32,
+                  icon: Icon(controller.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                ),
+                Positioned(left: 10, right: 10, bottom: 10,
+                  child: VideoProgressIndicator(controller, allowScrubbing: true, colors: VideoProgressColors(playedColor: accent))),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          const Text('This is the encoded file, not the original preview.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: OutlinedButton.icon(onPressed: _busy ? null : _saveEnhancedVideo, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save to device'))),
+            const SizedBox(width: 8),
+            Expanded(child: FilledButton.icon(onPressed: _busy ? null : _shareEnhancedVideo, icon: const Icon(Icons.ios_share_rounded), label: const Text('Share output'))),
+          ]),
+        ]),
       ),
     );
   }
@@ -954,7 +997,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 28),
               Text('Make your status\nlook its best.', style: TextStyle(fontSize: widget.compact ? 30 : 36, height: 1.04, fontWeight: FontWeight.w800, letterSpacing: -1.25)),
               const SizedBox(height: 12),
-              const Text('Process a video to a selected output resolution, then watch the encoded result in Movie Player.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
+              const Text('Choose a video, select the output resolution, process it, then inspect the encoded result right here.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
               const SizedBox(height: 18),
               Wrap(
                 spacing: 8,
@@ -966,60 +1009,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 18),
-              Material(
-                color: Theme.of(context).colorScheme.surface,
-                borderRadius: BorderRadius.circular(widget.rounded ? 24 : 12),
-                clipBehavior: Clip.antiAlias,
-                child: InkWell(
-                  onTap: _openMoviePlayer,
-                  child: Ink(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          accent.withValues(alpha: .20),
-                          Theme.of(context).colorScheme.surface,
-                          Theme.of(context).colorScheme.surface,
-                        ],
-                      ),
-                      border: Border.all(color: accent.withValues(alpha: .25)),
-                      borderRadius: BorderRadius.circular(widget.rounded ? 24 : 12),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(18),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 54,
-                            height: 64,
-                            decoration: BoxDecoration(
-                              color: accent.withValues(alpha: .14),
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Icon(Icons.play_circle_fill_rounded, color: accent, size: 34),
-                          ),
-                          const SizedBox(width: 14),
-                          const Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('WATCH ANYTHING', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white60)),
-                                SizedBox(height: 5),
-                                Text('Movie player', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-                                SizedBox(height: 4),
-                                Text('Portrait or landscape · broad format support · playback controls', style: TextStyle(fontSize: 11, height: 1.4, color: Colors.white60)),
-                              ],
-                            ),
-                          ),
-                          Icon(Icons.arrow_forward_rounded, color: accent),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
               _qualityBanner(accent),
               const SizedBox(height: 12),
 
@@ -1030,6 +1019,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 _qualityInfo(accent),
                 const SizedBox(height: 14),
                 _videoTools(accent),
+                if (_enhancedVideo != null) ...[
+                  const SizedBox(height: 14),
+                  _processedOutputPreview(accent),
+                ],
               ],
               const SizedBox(height: 20),
               Row(
