@@ -33,18 +33,24 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   String? _error;
   String? _status;
   int _width = 0, _height = 0, _target = 1080;
-  bool _scanning = false, _opening = false, _enhancing = false, _showControls = true;
+  bool _scanning = false, _opening = false, _enhancing = false, _showControls = true, _showPlayerView = false, _locked = false;
   double _speed = 1;
+  double _zoom = 1;
+  String _sortBy = 'Recent';
   Timer? _hideTimer;
+  Timer? _resumeTimer;
+  Timer? _sleepTimer;
 
   Color get _accent => Theme.of(context).colorScheme.primary;
-  bool get _watching => _path != null && _name != null;
+  bool get _watching => _showPlayerView && _path != null && _name != null;
+  bool get _hasMedia => _path != null && _name != null;
 
   @override
   void initState() {
     super.initState();
     _player = Player();
     _video = VideoController(_player);
+    _resumeTimer = Timer.periodic(const Duration(seconds: 5), (_) => _persistResume());
     _loadRecent();
     _scan();
     if (widget.initialPath != null && widget.initialPath!.isNotEmpty) {
@@ -55,6 +61,8 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   @override
   void dispose() {
     _hideTimer?.cancel();
+    _resumeTimer?.cancel();
+    _sleepTimer?.cancel();
     _search.dispose();
     unawaited(_player.dispose());
     super.dispose();
@@ -69,7 +77,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       for (final raw in prefs.getStringList('movie_recent_v2') ?? const <String>[]) {
         final split = Uri.decodeComponent(raw).split('|');
         if (split.length >= 2 && split.first.isNotEmpty && split.sublist(1).join('|').isNotEmpty) {
-          items.add({'path': split.first, 'name': split.sublist(1).join('|')});
+          items.add({'path': split.first, 'name': split[1], if (split.length > 2) 'resume': split[2]});
         }
       }
       if (mounted) setState(() => _recent = items);
@@ -78,13 +86,28 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   Future<void> _saveRecent(String path, String name) async {
     final next = <Map<String,String>>[
-      {'path': path, 'name': name},
+      {'path': path, 'name': name, 'resume': _player.state.position.inMilliseconds.toString()},
       ..._recent.where((v) => v['path'] != path),
     ].take(10).toList();
     if (mounted) setState(() => _recent = next);
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList('movie_recent_v2', next.map((v) => Uri.encodeComponent('${v['path']}|${v['name']}')).toList());
+      await prefs.setStringList('movie_recent_v2', next.map((v) => Uri.encodeComponent('${v['path']}|${v['name']}|${v['resume'] ?? 0}')).toList());
+    } catch (_) {}
+  }
+
+  Future<void> _persistResume() async {
+    final path = _path;
+    if (path == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_resumeKey(path), _player.state.position.inMilliseconds);
+      final index = _recent.indexWhere((item) => item['path'] == path);
+      if (index >= 0) {
+        final next = [..._recent];
+        next[index] = {...next[index], 'resume': _player.state.position.inMilliseconds.toString()};
+        if (mounted) setState(() => _recent = next);
+      }
     } catch (_) {}
   }
 
@@ -123,7 +146,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   Future<void> _open(String path, String name) async {
     if (_opening) return;
-    setState(() { _opening = true; _error = null; _status = null; _path = path; _name = name; _width = 0; _height = 0; });
+    setState(() { _opening = true; _error = null; _status = null; _path = path; _name = name; _width = 0; _height = 0; _showPlayerView = true; _locked = false; _zoom = 1; });
     try {
       await _player.open(Media(path), play: true);
       try {
@@ -155,9 +178,14 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   }
 
   void _backToLibrary() {
-    unawaited(_player.stop());
-    setState(() { _path = null; _name = null; _status = null; _error = null; });
-    unawaited(_scan());
+    unawaited(_persistResume());
+    setState(() { _showPlayerView = false; _status = null; _error = null; });
+  }
+
+  Future<void> _closePlayer() async {
+    await _persistResume();
+    await _player.stop();
+    if (mounted) setState(() { _path = null; _name = null; _status = null; _error = null; _showPlayerView = false; });
   }
 
   String _time(Duration d) {
@@ -204,6 +232,9 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   Widget _posterRow(Map<String,String> movie, {bool recent = false}) {
     final name = movie['name'] ?? 'Video';
+    final file = File(movie['path'] ?? '');
+    final size = file.existsSync() ? file.lengthSync() : 0;
+    final resume = int.tryParse(movie['resume'] ?? '') ?? 0;
     return Padding(
       padding: const EdgeInsets.only(bottom:10),
       child: Material(
@@ -215,12 +246,12 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(children:[
-              Container(width:76,height:68,decoration:BoxDecoration(color:const Color(0xFF252832),borderRadius:BorderRadius.circular(12)),child:Icon(recent?Icons.history_rounded:Icons.movie_creation_outlined,size:30,color:_accent)),
+              Container(width:76,height:68,decoration:BoxDecoration(gradient:LinearGradient(colors:[_accent.withValues(alpha:.35),const Color(0xFF252832)]),borderRadius:BorderRadius.circular(12)),child:Icon(recent?Icons.history_rounded:Icons.movie_creation_outlined,size:30,color:_accent)),
               const SizedBox(width:12),
               Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
                 Text(name,maxLines:2,overflow:TextOverflow.ellipsis,style:const TextStyle(fontWeight:FontWeight.w700,fontSize:14)),
                 const SizedBox(height:5),
-                Text(recent?'Continue watching':'On this device',style:const TextStyle(color:Colors.white54,fontSize:11)),
+                Text(recent && resume > 0 ? 'Resume at ${_time(Duration(milliseconds: resume))}' : '${_formatBytes(size)} · On this device',style:const TextStyle(color:Colors.white54,fontSize:11)),
               ])),
               const Icon(Icons.play_circle_fill_rounded,size:30),
             ]),
@@ -230,12 +261,17 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     );
   }
 
+  String _formatBytes(int bytes) => bytes < 1024 * 1024
+      ? '${(bytes / 1024).toStringAsFixed(0)} KB'
+      : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+
   Widget _library() {
     final q = _search.text.trim().toLowerCase();
-    final filtered = _videos.where((v)=>(v['name']??'').toLowerCase().contains(q)).toList();
-    return RefreshIndicator(
+    final filtered = _videos.where((v)=>(v['name']??'').toLowerCase().contains(q)).toList()
+      ..sort((a, b) => _sortBy == 'Name' ? (a['name'] ?? '').compareTo(b['name'] ?? '') : 0);
+    return Stack(children:[RefreshIndicator(
       onRefresh: _scan,
-      child: ListView(padding:const EdgeInsets.fromLTRB(18,10,18,28),children:[
+      child: ListView(padding:EdgeInsets.fromLTRB(18,10,18,_hasMedia ? 112 : 28),children:[
         Row(children:[
           Container(width:48,height:48,decoration:BoxDecoration(color:_accent.withValues(alpha:.16),borderRadius:BorderRadius.circular(15)),child:Icon(Icons.movie_filter_rounded,color:_accent,size:27)),
           const SizedBox(width:12),
@@ -244,31 +280,64 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
             SizedBox(height:4),
             Text('What shall we watch?',style:TextStyle(fontSize:23,fontWeight:FontWeight.w900,letterSpacing:-.6)),
           ])),
-          IconButton(onPressed:_scanning?null:_scan,icon:const Icon(Icons.refresh_rounded)),
+          PopupMenuButton<String>(onSelected:(value)=>setState(()=>_sortBy=value),itemBuilder:(_)=>const [PopupMenuItem(value:'Recent',child:Text('Sort: device order')),PopupMenuItem(value:'Name',child:Text('Sort: name'))],icon:const Icon(Icons.sort_rounded)),
         ]),
         const SizedBox(height:17),
         TextField(controller:_search,onChanged:(_)=>setState((){}),decoration:InputDecoration(hintText:'Search videos',prefixIcon:const Icon(Icons.search_rounded),filled:true,fillColor:const Color(0xFF17181D),border:OutlineInputBorder(borderRadius:BorderRadius.circular(16),borderSide:BorderSide.none))),
         const SizedBox(height:12),
         SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:_opening?null:_browse,icon:const Icon(Icons.folder_open_rounded),label:const Text('Browse videos'))),
+        if(_recent.isNotEmpty) ...[
+          _section('Continue watching',trailing:Text('${_recent.length} recent',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
+          for(final movie in _recent.take(3)) _posterRow(movie,recent:true),
+        ],
         _section('On this device',trailing:Text(_scanning?'Scanning…':'${filtered.length} videos',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
         if (_scanning) const LinearProgressIndicator(),
-        if (filtered.isEmpty && !_scanning) Padding(padding:const EdgeInsets.symmetric(vertical:22),child:Text(q.isEmpty?'No videos found yet. Browse files to choose a video.':'No videos match your search.',style:const TextStyle(color:Colors.white54))),
+        if (filtered.isEmpty && !_scanning) Center(child:Padding(padding:const EdgeInsets.symmetric(vertical:30),child:Column(children:[Icon(q.isEmpty?Icons.video_library_outlined:Icons.search_off_rounded,size:42,color:Colors.white38),const SizedBox(height:12),Text(q.isEmpty?'No videos found yet':'No videos match your search.',style:const TextStyle(color:Colors.white70,fontWeight:FontWeight.w700)),const SizedBox(height:5),Text(q.isEmpty?'Browse files or refresh after granting media access.':'Try another title or clear the search.',style:const TextStyle(color:Colors.white54,fontSize:12))]))),
         for(final movie in filtered) _posterRow(movie),
         if (_error!=null) Padding(padding:const EdgeInsets.only(top:12),child:Text(_error!,style:TextStyle(color:Theme.of(context).colorScheme.error))),
       ]),
-    );
+    ),if(_hasMedia) Positioned(left:12,right:12,bottom:12,child:_miniPlayer())]);
   }
+
+  Widget _miniPlayer() => Material(
+    color: const Color(0xFF17181D),
+    borderRadius: BorderRadius.circular(18),
+    elevation: 10,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: () => setState(() => _showPlayerView = true),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+        child: Row(children: [
+          Container(width: 44, height: 44, decoration: BoxDecoration(color: _accent.withValues(alpha: .18), borderRadius: BorderRadius.circular(12)), child: Icon(Icons.movie_rounded, color: _accent)),
+          const SizedBox(width: 10),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(_name ?? 'Now playing', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800)),
+            StreamBuilder<Duration>(stream: _player.stream.position, initialData: _player.state.position, builder: (_, snapshot) => Text('${_time(snapshot.data ?? Duration.zero)} · Tap to return', style: const TextStyle(fontSize: 11, color: Colors.white54))),
+          ])),
+          StreamBuilder<bool>(stream: _player.stream.playing, initialData: _player.state.playing, builder: (_, snapshot) => IconButton(onPressed: () => snapshot.data == true ? _player.pause() : _player.play(), icon: Icon(snapshot.data == true ? Icons.pause_rounded : Icons.play_arrow_rounded))),
+          IconButton(tooltip: 'Close player', onPressed: _closePlayer, icon: const Icon(Icons.close_rounded)),
+        ]),
+      ),
+    ),
+  );
 
   Widget _watch() {
     return Column(children:[
       Expanded(child:GestureDetector(
-        onTap:_armControls,
+        onTap:_locked ? null : _armControls,
+        onScaleUpdate:_locked ? null : (details) { if(details.scale != 1) setState(()=>_zoom = details.scale.clamp(1.0, 1.8).toDouble()); },
         child:Container(color:Colors.black,width:double.infinity,child:Stack(fit:StackFit.expand,children:[
-          Center(child:Video(controller:_video,fit:BoxFit.contain)),
+          Center(child:Transform.scale(scale:_zoom,child:Video(controller:_video,fit:BoxFit.contain))),
+          if(!_locked) Positioned.fill(child:Row(children:[
+            Expanded(child:GestureDetector(onDoubleTap:(){_player.seek(_player.state.position-const Duration(seconds:10));_armControls();})),
+            Expanded(child:GestureDetector(onDoubleTap:(){_player.seek(_player.state.position+const Duration(seconds:10));_armControls();})),
+          ])),
           if (_showControls) ...[
             Positioned(top:8,left:8,right:8,child:Row(children:[
               IconButton(onPressed:_backToLibrary,icon:const Icon(Icons.arrow_back_rounded,color:Colors.white)),
               Expanded(child:Text(_name??'',maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))),
+              IconButton(tooltip:_locked?'Unlock controls':'Lock controls',onPressed:(){_hideTimer?.cancel();setState(()=>_locked=!_locked);},icon:Icon(_locked?Icons.lock_rounded:Icons.lock_open_rounded,color:Colors.white)),
               IconButton(onPressed:()=>setState(()=>_speed=_speed==2?0.5:_speed+0.25),icon:Text('${_speed.toStringAsFixed(2)}×',style:const TextStyle(color:Colors.white,fontSize:12))),
             ])),
             Center(child:Row(mainAxisAlignment:MainAxisAlignment.center,children:[
@@ -292,7 +361,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         Row(children:[Expanded(child:Text(_name??'Now playing',maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(fontWeight:FontWeight.w800,fontSize:16))),if(_width>0)Text('${_width}×$_height',style:TextStyle(color:_accent,fontSize:11,fontWeight:FontWeight.w700))]),
         const SizedBox(height:12),
         Row(children:[
-          Expanded(child:OutlinedButton.icon(onPressed:()=>_showPlayerOptions(),icon:const Icon(Icons.tune_rounded),label:const Text('Player controls'))),
+          Expanded(child:OutlinedButton.icon(onPressed:_showPlayerOptions,icon:const Icon(Icons.tune_rounded),label:const Text('Now playing'))),
           const SizedBox(width:10),
           Expanded(child:FilledButton.icon(onPressed:_enhancing||_width<2?null:_showEnhancementOptions,icon:_enhancing?const SizedBox(width:16,height:16,child:CircularProgressIndicator(strokeWidth:2)):const Icon(Icons.auto_awesome_rounded),label:Text(_enhancing?'Improving…':'Improve video'))),
         ]),
@@ -319,6 +388,28 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     if(result!=null&&mounted){setState(()=>_target=result);unawaited(_enhance());}
   }
 
+  void _setSleepTimer(int minutes) {
+    _sleepTimer?.cancel();
+    if (minutes <= 0) {
+      setState(() => _status = 'Sleep timer is off.');
+      return;
+    }
+    setState(() => _status = 'Sleep timer set for $minutes minutes.');
+    _sleepTimer = Timer(Duration(minutes: minutes), () async {
+      await _player.pause();
+      if (mounted) setState(() => _status = 'Sleep timer paused playback.');
+    });
+  }
+
+  Future<void> _showSleepTimer() async {
+    final minutes = await showModalBottomSheet<int>(context: context, backgroundColor: const Color(0xFF17181D), showDragHandle: true, builder: (ctx) => SafeArea(child: Padding(padding: const EdgeInsets.fromLTRB(20, 8, 20, 24), child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const Text('Sleep timer', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+      const SizedBox(height: 10),
+      for (final value in [15, 30, 60, 0]) ListTile(leading: const Icon(Icons.bedtime_rounded), title: Text(value == 0 ? 'Turn off timer' : '$value minutes'), onTap: () => Navigator.pop(ctx, value)),
+    ])));
+    if (minutes != null && mounted) _setSleepTimer(minutes);
+  }
+
   Future<void> _showPlayerOptions() async {
     var speed = _speed;
     final result = await showModalBottomSheet<double>(context:context,backgroundColor:const Color(0xFF17181D),showDragHandle:true,builder:(ctx)=>StatefulBuilder(builder:(ctx,setSheet)=>SafeArea(child:Padding(padding:const EdgeInsets.fromLTRB(20,8,20,24),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.start,children:[
@@ -329,6 +420,8 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       const SizedBox(height:10),
       ListTile(leading:const Icon(Icons.subtitles_rounded),title:const Text('Load subtitles'),onTap:()async{Navigator.pop(ctx,speed);await _chooseSubtitle();}),
       ListTile(leading:const Icon(Icons.audiotrack_rounded),title:const Text('Audio and subtitle tracks'),onTap:(){Navigator.pop(ctx,speed);unawaited(_showTracks());}),
+      ListTile(leading:const Icon(Icons.bedtime_rounded),title:const Text('Sleep timer'),subtitle:const Text('Pause automatically after 15, 30 or 60 minutes'),onTap:(){Navigator.pop(ctx,speed);unawaited(_showSleepTimer());}),
+      ListTile(leading:const Icon(Icons.zoom_out_map_rounded),title:const Text('Reset video zoom'),onTap:(){setState(()=>_zoom=1);Navigator.pop(ctx,speed);}),
     ])))));
     if(result!=null&&mounted){setState(()=>_speed=result);await _player.setRate(result);}
   }
