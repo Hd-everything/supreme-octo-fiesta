@@ -15,7 +15,8 @@ void main() {
     expect(find.text('Make your status\nlook its best.'), findsOneWidget);
     expect(find.text('Studio'), findsOneWidget);
     expect(find.text('Tools'), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('Settings'), findsNothing);
+    expect(find.text('Movie Player'), findsOneWidget);
     expect(find.text('Movie player'), findsOneWidget);
 
     await tester.tap(find.text('Tools'));
