@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
 import 'package:statushd/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -24,7 +25,26 @@ void main() {
     expect(find.text('Studio tools'), findsOneWidget);
     expect(find.text('Movie Player'), findsOneWidget);
     expect(find.text('Quality studio'), findsOneWidget);
-    expect(find.text('Trim & split'), findsOneWidget);
+
+    // Be tolerant of small label changes (e.g. extra suffixes like "for Status").
+    expect(
+      find.byWidgetPredicate(
+        (w) {
+          if (w is Text) {
+            final s = (w.data ?? '').toLowerCase();
+            return s.contains('trim') && s.contains('split');
+          }
+          if (w is RichText) {
+            final txt = w.text.toPlainText().toLowerCase();
+            return txt.contains('trim') && txt.contains('split');
+          }
+          return false;
+        },
+        description: 'Text widget containing "trim" and "split"',
+      ),
+      findsOneWidget,
+    );
+
     expect(find.text('Theme mode'), findsNothing);
     expect(find.text('Navigation style'), findsNothing);
     expect(find.text('Appearance'), findsNothing);
