@@ -179,7 +179,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       await _player.pause();
       final result = await _channel.invokeMethod<String>('enhanceVideo', {
         'inputPath': source, 'outputPath': output, 'outputWidth': outW, 'outputHeight': outH,
-        'brightness': 0.025, 'contrast': 0.06, 'saturation': 0.035,
+        'brightness': 0.08, 'contrast': 0.16, 'saturation': 14.0,
       });
       if (result == null || !await File(result).exists() || await File(result).length() == 0) throw StateError('No output video was created.');
       try {
@@ -312,7 +312,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       const SizedBox(height:18),
       Wrap(spacing:8,children:[for(final size in [480,720,1080,1440]) ChoiceChip(label:Text('${size}p'),selected:selected==size,onSelected:(_)=>setSheet(()=>selected=size))]),
       const SizedBox(height:12),
-      const Text('Upscaling can make playback smoother and the image look cleaner, but cannot recover detail absent from the source.',style:TextStyle(color:Colors.white54,fontSize:12,height:1.45)),
+      const Text('The export applies visible brightness, contrast, colour and high-quality resampling. It creates a separate copy; resizing alone cannot recover missing detail.',style:TextStyle(color:Colors.white54,fontSize:12,height:1.45)),
       const SizedBox(height:12),
       SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:()=>Navigator.pop(ctx,selected),icon:const Icon(Icons.auto_awesome_rounded),label:const Text('Create clearer copy'))),
     ])))));
