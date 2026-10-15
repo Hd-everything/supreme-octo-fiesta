@@ -185,13 +185,118 @@ jobs:
         working-directory: /tmp/statushd
         run: flutter test
 
-      - name: Build debug APK
+      - name: Configure Android release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         working-directory: /tmp/statushd
-        run: flutter build apk --debug
+        run: |
+          set -euo pipefail
+          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!secret_name:-}" ]; then
+              echo "::error::Required repository secret ${secret_name} is not configured."
+              exit 1
+            fi
+          done
 
-      - name: Upload Android APK
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+          test -s android/app/release.keystore
+          chmod 600 android/app/release.keystore
+
+          cat > android/key.properties <<EOF
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=release.keystore
+          EOF
+          chmod 600 android/key.properties
+
+      - name: Apply Android release signing configuration
+        working-directory: /tmp/statushd
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          gradle = next(
+              (path for path in (Path("android/app/build.gradle.kts"), Path("android/app/build.gradle")) if path.exists()),
+              None,
+          )
+          if gradle is None:
+              raise SystemExit("Generated Android app Gradle file was not found")
+
+          source = gradle.read_text()
+          if gradle.suffix == ".kts":
+              setup = '''
+val keystoreProperties = java.util.Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(keystorePropertiesFile.inputStream())
+}
+
+'''
+              signing = '''
+    signingConfigs {
+        create("release") {
+            keyAlias = keystoreProperties["keyAlias"] as String
+            keyPassword = keystoreProperties["keyPassword"] as String
+            storeFile = file(keystoreProperties["storeFile"] as String)
+            storePassword = keystoreProperties["storePassword"] as String
+        }
+    }
+'''
+              release_signing = 'signingConfig = signingConfigs.getByName("release")'
+          else:
+              setup = '''
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+'''
+              signing = '''
+    signingConfigs {
+        release {
+            keyAlias keystoreProperties['keyAlias']
+            keyPassword keystoreProperties['keyPassword']
+            storeFile file(keystoreProperties['storeFile'])
+            storePassword keystoreProperties['storePassword']
+        }
+    }
+'''
+              release_signing = 'signingConfig signingConfigs.release'
+
+          if 'keystorePropertiesFile' not in source:
+              source = setup + source
+          if 'signingConfigs {' not in source:
+              android_match = re.search(r'android\s*\{', source)
+              if not android_match:
+                  raise SystemExit("Could not find the Android configuration block")
+              source = source[:android_match.end()] + signing + source[android_match.end():]
+
+          release_match = re.search(r'(release\s*\{)(.*?)(\n\s*\})', source, re.DOTALL)
+          if not release_match:
+              raise SystemExit("Could not find the release build type")
+          release_body = release_match.group(2)
+          if 'signingConfig' not in release_body:
+              release_body += "\n            " + release_signing + "\n        "
+          else:
+              release_body = re.sub(r'signingConfig\s*(?:=\s*)?[^\n]+', release_signing, release_body)
+          source = source[:release_match.start(2)] + release_body + source[release_match.end(2):]
+          gradle.write_text(source)
+          print(f"Configured release signing in {gradle}")
+          PY
+
+      - name: Build signed release APK
+        working-directory: /tmp/statushd
+        run: flutter build apk --release
+
+      - name: Upload signed Android APK
         uses: actions/upload-artifact@v5
         with:
-          name: statushd-android-debug
-          path: /tmp/statushd/build/app/outputs/flutter-apk/app-debug.apk
+          name: statushd-android-release
+          path: /tmp/statushd/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 1
