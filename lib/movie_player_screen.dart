@@ -37,6 +37,8 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   String? _playbackMessage;
   bool _controlsLocked = false;
   List<Map<String, String>> _recentMovies = <Map<String, String>>[];
+  List<Map<String, String>> _deviceMovies = <Map<String, String>>[];
+  bool _scanningDevice = false;
   String _libraryQuery = '';
   String? _error;
   bool _opening = false;
@@ -59,6 +61,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     _player = Player();
     _videoController = VideoController(_player);
     unawaited(_loadRecentMovies());
+    unawaited(_loadDeviceMovies());
     if (widget.initialPath != null && widget.initialPath!.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_openMovie(widget.initialPath!, widget.initialName ?? File(widget.initialPath!).uri.pathSegments.last));
@@ -138,6 +141,29 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     }
   }
 
+  Future<void> _loadDeviceMovies() async {
+    if (!Platform.isAndroid || _scanningDevice) return;
+    if (mounted) setState(() => _scanningDevice = true);
+    try {
+      final result = await const MethodChannel("com.ptip.statushd/media").invokeMethod<List<dynamic>>("listDeviceVideos");
+      final movies = <Map<String, String>>[];
+      for (final item in result ?? const <dynamic>[]) {
+        if (item is! Map) continue;
+        final path = item["path"]?.toString();
+        final name = item["name"]?.toString();
+        if (path != null && path.isNotEmpty && name != null && name.isNotEmpty) {
+          movies.add({"path": path, "name": name});
+        }
+      }
+      if (mounted) setState(() => _deviceMovies = movies);
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? "Could not scan videos on this device.");
+    } catch (_) {
+      if (mounted) setState(() => _error = "Could not scan videos on this device.");
+    } finally {
+      if (mounted) setState(() => _scanningDevice = false);
+    }
+  }
   Future<void> _rememberRecentMovie(String path, String name) async {
     final next = <Map<String, String>>[
       {'path': path, 'name': name},
@@ -616,6 +642,35 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
             onPressed: _opening ? null : _chooseMovie,
             icon: const Icon(Icons.folder_open_rounded),
           ),
+          PopupMenuButton<String>(
+            tooltip: 'Player menu',
+            onSelected: (action) {
+              switch (action) {
+                case 'scan':
+                  unawaited(_loadDeviceMovies());
+                  break;
+                case 'tracks':
+                  unawaited(_showTrackPicker());
+                  break;
+                case 'picture':
+                  setState(() => _showPictureTuning = !_showPictureTuning);
+                  break;
+                case 'sleep':
+                  unawaited(_showSleepTimerPicker());
+                  break;
+                case 'subtitle':
+                  unawaited(_chooseSubtitle());
+                  break;
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'scan', child: Text('Refresh device library')),
+              PopupMenuItem(value: 'tracks', child: Text('Audio & subtitles')),
+              PopupMenuItem(value: 'subtitle', child: Text('Load subtitle')),
+              PopupMenuItem(value: 'picture', child: Text('Picture tuning')),
+              PopupMenuItem(value: 'sleep', child: Text('Sleep timer')),
+            ],
+          ),
         ],
       ),
       body: SafeArea(
@@ -1059,6 +1114,47 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                 ),
                 child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer, fontSize: 12)),
               ),
+            ],
+            if (_deviceMovies.isNotEmpty || _scanningDevice) ...[
+              Row(
+                children: [
+                  const Expanded(child: Text('On this device', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))),
+                  Text(_scanningDevice ? 'Scanning…' : '${_deviceMovies.length} videos', style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w700)),
+                  IconButton(
+                    tooltip: 'Refresh device videos',
+                    onPressed: _scanningDevice ? null : _loadDeviceMovies,
+                    icon: const Icon(Icons.refresh_rounded),
+                  ),
+                ],
+              ),
+              if (_deviceMovies.isEmpty && _scanningDevice)
+                const LinearProgressIndicator(),
+              if (_deviceMovies.isEmpty && !_scanningDevice)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12),
+                  child: Text('No videos were found. Allow video access or choose a file from storage.', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                ),
+              Card(
+                child: Column(
+                  children: [
+                    for (var index = 0; index < _deviceMovies.where((movie) => (movie['name'] ?? '').toLowerCase().contains(_libraryQuery.trim().toLowerCase())).length; index++) ...[
+                      if (index > 0) const Divider(height: 1, indent: 56),
+                      Builder(builder: (context) {
+                        final visible = _deviceMovies.where((movie) => (movie['name'] ?? '').toLowerCase().contains(_libraryQuery.trim().toLowerCase())).toList();
+                        final movie = visible[index];
+                        return ListTile(
+                          leading: Icon(Icons.video_file_rounded, color: accent),
+                          title: Text(movie['name'] ?? 'Video', maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: const Text('Device video'),
+                          trailing: const Icon(Icons.play_circle_outline_rounded),
+                          onTap: _opening ? null : () => _openRecentMovie(movie),
+                        );
+                      }),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
             ],
             if (_recentMovies.isNotEmpty) ...[
               const SizedBox(height: 18),
