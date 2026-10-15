@@ -45,7 +45,7 @@ Video segment export aims to avoid re-encoding where the platform/source permits
 
 ## Video processing and quality
 
-On Android, Status HD processes the selected source video locally with AndroidX Media3 Transformer. The enhancement pass applies adjustable brightness, contrast, saturation/lightness, high-quality Lanczos resampling, and H.264/AAC re-encoding at the selected output dimensions. The app verifies that a non-empty processed file was created, offers an in-app playback preview, and then lets the user save or share that processed copy.
+On Android, Status HD processes the selected source video locally with AndroidX Media3 Transformer. The enhancement pass applies brightness, contrast, saturation/lightness, high-quality Lanczos resampling, and H.264/AAC re-encoding at the selected output dimensions. Status HD and Movie Player remain separate features; the player can create its own enhanced copy using the same local processing channel. The app verifies that a non-empty processed file was created, offers an in-app playback preview, and then lets the user save or share that processed copy.
 
 The source file is not overwritten; the processed result is a separate copy. Increasing dimensions alone cannot recover details that were never captured, and these filters are not AI super-resolution or generative restoration. Actual visual improvement depends on the source, chosen filter values, and device encoder. Processing consumes time, battery, and storage. WhatsApp may recompress media after sharing.
 
