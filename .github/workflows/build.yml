@@ -169,6 +169,7 @@ jobs:
         run: |
           rm -rf /tmp/statushd/lib /tmp/statushd/test
           cp -R lib test /tmp/statushd/
+          cp -R assets /tmp/statushd/
           cp pubspec.yaml analysis_options.yaml /tmp/statushd/
           mkdir -p /tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd
           cp android/MainActivity.kt /tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd/MainActivity.kt
@@ -176,6 +177,10 @@ jobs:
       - name: Resolve dependencies
         working-directory: /tmp/statushd
         run: flutter pub get
+
+      - name: Generate Android launcher icon
+        working-directory: /tmp/statushd
+        run: dart run flutter_launcher_icons
 
       - name: Analyze Dart source
         working-directory: /tmp/statushd

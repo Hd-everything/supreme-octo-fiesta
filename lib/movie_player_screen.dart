@@ -406,7 +406,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       const Text('Sleep timer', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
       const SizedBox(height: 10),
       for (final value in [15, 30, 60, 0]) ListTile(leading: const Icon(Icons.bedtime_rounded), title: Text(value == 0 ? 'Turn off timer' : '$value minutes'), onTap: () => Navigator.pop(ctx, value)),
-    ])));
+    ]))));
     if (minutes != null && mounted) _setSleepTimer(minutes);
   }
 
