@@ -248,6 +248,7 @@ class _HomeScreenState extends State<HomeScreen> {
   VideoPlayerController? _enhancedPreviewController;
   double _trimStart = 0;
   double? _trimEnd;
+  String _cropRatio = '9:16';
   bool _exporting = false;
   List<XFile> _segments = [];
   String? _sourceResolution;
@@ -543,6 +544,81 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
 
+
+  Future<void> _cropVideo() async {
+    final file = _selected;
+    final controller = _videoController;
+    if (file == null || controller == null || !controller.value.isInitialized || _exporting || _busy) return;
+    final sourceWidth = controller.value.size.width.round();
+    final sourceHeight = controller.value.size.height.round();
+    if (sourceWidth < 2 || sourceHeight < 2) {
+      setState(() => _message = 'Could not detect the video dimensions.');
+      return;
+    }
+    late final int outputWidth;
+    late final int outputHeight;
+    switch (_cropRatio) {
+      case '9:16':
+        outputWidth = 1080;
+        outputHeight = 1920;
+        break;
+      case '1:1':
+        outputWidth = 1080;
+        outputHeight = 1080;
+        break;
+      case '16:9':
+        outputWidth = 1920;
+        outputHeight = 1080;
+        break;
+      default:
+        final longEdge = sourceWidth > sourceHeight ? sourceWidth : sourceHeight;
+        final shortEdge = sourceWidth < sourceHeight ? sourceWidth : sourceHeight;
+        outputWidth = sourceWidth >= sourceHeight ? longEdge : shortEdge;
+        outputHeight = sourceWidth >= sourceHeight ? shortEdge : longEdge;
+    }
+    setState(() {
+      _exporting = true;
+      _cancelExportRequested = false;
+      _message = 'Cropping video to $_cropRatio…';
+      _enhancedVideo = null;
+      _segments = [];
+    });
+    try {
+      final output = '${Directory.systemTemp.path}/statushd_crop_${DateTime.now().microsecondsSinceEpoch}.mp4';
+      final path = await _mediaChannel.invokeMethod<String>('cropVideo', {
+        'inputPath': file.path,
+        'outputPath': output,
+        'outputWidth': outputWidth,
+        'outputHeight': outputHeight,
+      });
+      if (path == null || !await File(path).exists() || await File(path).length() == 0) {
+        throw StateError('The crop processor did not produce a valid output file.');
+      }
+      await _enhancedPreviewController?.dispose();
+      final preview = VideoPlayerController.file(File(path));
+      await preview.initialize();
+      await preview.setLooping(true);
+      if (!mounted) {
+        await preview.dispose();
+        return;
+      }
+      setState(() {
+        _enhancedVideo = XFile(path, mimeType: 'video/mp4');
+        _enhancedPreviewController = preview;
+        _message = 'Cropped video ready: ${preview.value.size.width.round()}×${preview.value.size.height.round()}. The original is unchanged.';
+        _exportEstimateMessage = 'Cropped output: ${_formatBytes(await File(path).length())}';
+      });
+      await preview.play();
+      if (mounted) setState(() {});
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _message = error.message ?? 'Could not crop this video on this device.');
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Could not crop this video. Try another video. Details: ${error.toString().replaceFirst('Exception: ', '')}');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
   Future<void> _exportVideoSegments() async {
     final file = _selected;
     final controller = _videoController;
@@ -837,6 +913,35 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.circular(widget.rounded ? 22 : 12),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.crop_rounded, color: accent),
+          const SizedBox(width: 9),
+          const Expanded(child: Text('Video crop', style: TextStyle(fontWeight: FontWeight.w800))),
+        ]),
+        const SizedBox(height: 6),
+        const Text('Crop the frame to a format for status, square posts or widescreen. Cropping exports a new video and keeps the original untouched.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.4)),
+        const SizedBox(height: 10),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(value: '9:16', label: Text('9:16')),
+            ButtonSegment(value: '1:1', label: Text('1:1')),
+            ButtonSegment(value: '16:9', label: Text('16:9')),
+            ButtonSegment(value: 'Original', label: Text('Original')),
+          ],
+          selected: {_cropRatio},
+          onSelectionChanged: _exporting ? null : (values) => setState(() => _cropRatio = values.first),
+          showSelectedIcon: false,
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: _exporting || _busy ? null : _cropVideo,
+            icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.crop_rounded),
+            label: Text(_exporting ? 'Processing video…' : 'Crop & preview video'),
+          ),
+        ),
+        const SizedBox(height: 22),
         Row(children: [
           Icon(Icons.content_cut_rounded, color: accent),
           const SizedBox(width: 9),
