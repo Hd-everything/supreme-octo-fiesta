@@ -395,10 +395,22 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       final actualLength = await File(processedPath).length();
       if (actualLength == 0) throw StateError('The processed video is empty.');
+      var savedToDevice = false;
+      if (Platform.isAndroid) {
+        try {
+          await _mediaChannel.invokeMethod<String>('saveVideoToGallery', {
+            'inputPath': processedPath,
+            'displayName': 'StatusHD_${outputWidth}x${outputHeight}_${DateTime.now().millisecondsSinceEpoch}.mp4',
+          });
+          savedToDevice = true;
+        } catch (_) {
+          // Playback can still continue if Gallery saving is unavailable.
+        }
+      }
       if (!mounted) return;
       setState(() {
         _enhancedVideo = XFile(processedPath, mimeType: 'video/mp4');
-        _message = 'Finished encoding at $outputWidth×$outputHeight · ${_formatBytes(actualLength)}. Opening the processed file in Movie Player.';
+        _message = 'Encoded output: $outputWidth×$outputHeight · ${_formatBytes(actualLength)}.${savedToDevice ? ' Saved to Movies/Status HD.' : ''} Opening Movie Player.';
         _exportEstimateMessage = 'Output: ${outputWidth}×${outputHeight} · ${_formatBytes(actualLength)}';
         _enhanceProgress = 1;
       });
