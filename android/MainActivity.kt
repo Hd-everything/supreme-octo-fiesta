@@ -14,6 +14,8 @@ import androidx.media3.effect.Contrast
 import androidx.media3.transformer.Effects
 import androidx.media3.effect.HslAdjustment
 import androidx.media3.effect.LanczosResample
+import androidx.media3.effect.ConvolutionFunction1D
+import androidx.media3.effect.SeparableConvolution
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.ExportException
@@ -24,11 +26,29 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.FileInputStream
+import kotlin.math.abs
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.nio.ByteBuffer
+
+@UnstableApi
+private class DetailSharpenEffect(private val amount: Float = 0.22f) : SeparableConvolution() {
+    override fun getConvolution(presentationTimeUs: Long): ConvolutionFunction1D =
+        object : ConvolutionFunction1D {
+            override fun domainStart(): Float = -1f
+            override fun domainEnd(): Float = 1f
+            override fun value(samplePosition: Float): Float {
+                val distance = abs(samplePosition)
+                return when {
+                    distance < 0.25f -> 1f + 2f * amount
+                    distance > 0.75f -> -amount
+                    else -> 0f
+                }
+            }
+        }
+}
 
 @UnstableApi
 class MainActivity : FlutterActivity() {
@@ -126,6 +146,7 @@ class MainActivity : FlutterActivity() {
                     Brightness(brightness),
                     Contrast(contrast),
                     HslAdjustment.Builder().adjustSaturation(saturation).adjustLightness(2f).build(),
+                    DetailSharpenEffect(0.22f),
                     LanczosResample.scaleToFit(outputWidth, outputHeight),
                     Presentation.createForWidthAndHeight(
                         outputWidth,
