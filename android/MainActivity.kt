@@ -11,6 +11,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
+import androidx.media3.effect.Crop
 import androidx.media3.transformer.Effects
 import androidx.media3.effect.HslAdjustment
 import androidx.media3.effect.LanczosResample
@@ -185,6 +186,59 @@ class MainActivity : FlutterActivity() {
                 } catch (error: Exception) {
                     outputFile.delete()
                     result.error("enhance_start_failed", error.message ?: "Could not start video processing.", null)
+                }
+                return@setMethodCallHandler
+            }
+            if (call.method == "cropVideo") {
+                val inputPath = call.argument<String>("inputPath")
+                val outputPath = call.argument<String>("outputPath")
+                val outputWidth = call.argument<Number>("outputWidth")?.toInt()
+                val outputHeight = call.argument<Number>("outputHeight")?.toInt()
+                if (inputPath.isNullOrBlank() || !File(inputPath).isFile ||
+                    outputPath.isNullOrBlank() || outputWidth == null || outputHeight == null ||
+                    outputWidth < 2 || outputHeight < 2) {
+                    result.error("invalid_arguments", "Choose a valid source video and crop size.", null)
+                    return@setMethodCallHandler
+                }
+                val outputFile = File(outputPath)
+                outputFile.parentFile?.mkdirs()
+                outputFile.delete()
+                val cropEffect = Presentation.createForWidthAndHeight(
+                    outputWidth,
+                    outputHeight,
+                    Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+                )
+                val editedItem = EditedMediaItem.Builder(
+                    MediaItem.fromUri(Uri.fromFile(File(inputPath)))
+                ).setEffects(Effects(emptyList(), listOf(cropEffect))).build()
+                val transformer = Transformer.Builder(this)
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .addListener(object : Transformer.Listener {
+                        override fun onCompleted(composition: androidx.media3.transformer.Composition, exportResult: ExportResult) {
+                            if (outputFile.isFile && outputFile.length() > 0L) {
+                                result.success(outputFile.absolutePath)
+                            } else {
+                                outputFile.delete()
+                                result.error("crop_empty", "Cropping completed without a valid output file.", null)
+                            }
+                        }
+
+                        override fun onError(
+                            composition: androidx.media3.transformer.Composition,
+                            exportResult: ExportResult,
+                            exportException: ExportException
+                        ) {
+                            outputFile.delete()
+                            result.error("crop_failed", exportException.message ?: "Video cropping failed on this device.", null)
+                        }
+                    })
+                    .build()
+                try {
+                    transformer.start(editedItem, outputFile.absolutePath)
+                } catch (error: Exception) {
+                    outputFile.delete()
+                    result.error("crop_start_failed", error.message ?: "Could not start video cropping.", null)
                 }
                 return@setMethodCallHandler
             }
