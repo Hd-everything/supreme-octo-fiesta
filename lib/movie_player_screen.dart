@@ -67,11 +67,10 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       final prefs = await SharedPreferences.getInstance();
       final items = <Map<String,String>>[];
       for (final raw in prefs.getStringList('movie_recent_v2') ?? const <String>[]) {
-        try {
-          final map = Map<String,dynamic>.from((Uri.decodeComponent(raw)).isEmpty ? {} : const {});
-          // Older history is intentionally optional; the current library scan is authoritative.
-          if (map.isNotEmpty) items.add(map.map((k,v) => MapEntry(k, '$v')));
-        } catch (_) {}
+        final split = Uri.decodeComponent(raw).split('|');
+        if (split.length >= 2 && split.first.isNotEmpty && split.sublist(1).join('|').isNotEmpty) {
+          items.add({'path': split.first, 'name': split.sublist(1).join('|')});
+        }
       }
       if (mounted) setState(() => _recent = items);
     } catch (_) {}
@@ -336,7 +335,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   Future<void> _chooseSubtitle() async {
     final result=await FilePicker.platform.pickFiles(type:FileType.custom,allowedExtensions:const ['srt','ass','ssa','vtt'],withData:false);
-    final path=result?.files.singleOrNull?.path;
+    final path=result == null || result.files.isEmpty ? null : result.files.single.path;
     if(path==null)return;
     try{await _player.setSubtitleTrack(SubtitleTrack.uri(path));if(mounted)setState(()=>_status='Subtitle loaded: ${result!.files.single.name}');}catch(e){if(mounted)setState(()=>_error='Could not load subtitles: $e');}
   }
