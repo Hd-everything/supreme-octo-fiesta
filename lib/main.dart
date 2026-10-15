@@ -732,9 +732,9 @@ class _HomeScreenState extends State<HomeScreen> {
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: _openMoviePlayer,
+              onPressed: _previewEnhancedVideo,
               icon: const Icon(Icons.play_circle_fill_rounded),
-              label: const Text('Open Movie Player'),
+              label: const Text('Play processed output'),
             ),
           ),
           const SizedBox(height: 8),
