@@ -313,13 +313,10 @@ class _HomeScreenState extends State<HomeScreen> {
           final height = controller.value.size.height.round();
           _sourceResolution = '$width×$height';
           final shortEdge = width < height ? width : height;
-          _qualityRecommendation = shortEdge < 480
-              ? 'Low-resolution source detected. Status HD can apply real brightness, contrast and color adjustments, then encode an enlarged copy. Upscaling alone cannot restore detail that was never captured.'
-              : shortEdge < 720
-                  ? 'SD source detected. Status HD will process brightness, contrast and color, then encode an enlarged copy. Enlarging alone cannot restore lost detail.'
-                  : 'Status HD can apply picture adjustments and re-encode the video. Choose output size based on your needs; larger dimensions do not guarantee more detail.';
-          // Status preparation prioritizes a clean, high-bitrate 1080p upload source.
-          // Keep Original available as an explicit no-reencode option.
+          _qualityRecommendation = shortEdge < 720
+              ? 'Low-resolution video detected. Choose a larger output, then Status HD enhances brightness, contrast, colour and sharpness before encoding a smoother-to-view copy.'
+              : 'Choose the output quality that suits your screen. Status HD adjusts the picture and re-encodes a new copy while leaving your original untouched.';
+          // Auto selects at least 1080p; explicit choices include 480p through 1440p.
           _targetLongEdge = -1;
           _exportEstimateMessage = _estimateExportSize();
         });
@@ -338,7 +335,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ? 2000000
             : _targetLongEdge == 1280
                 ? 4500000
-                : 8000000;
+                : _targetLongEdge == 2560
+                    ? 14000000
+                    : 8000000;
     final audioBitrate = _targetLongEdge <= 854 ? 128000 : 160000;
     final estimatedBytes = ((videoBitrate + audioBitrate) * duration.inSeconds / 8).round();
     return 'Estimated size: about ${_formatBytes(estimatedBytes)} · actual size varies by video content';
@@ -368,7 +367,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _message = 'Original selected. The source file remains unchanged; no re-encode is needed.');
       return;
     }
-    final presetLabel = _targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p';
+    final presetLabel = _targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 2560 ? '1440p' : '1080p';
     setState(() {
       _exporting = true;
       _cancelExportRequested = false;
@@ -717,6 +716,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ButtonSegment(value: 854, label: Text('480p')),
             ButtonSegment(value: 1280, label: Text('720p')),
             ButtonSegment(value: 1920, label: Text('1080p')),
+            ButtonSegment(value: 2560, label: Text('1440p')),
           ],
           selected: {_targetLongEdge},
           onSelectionChanged: _exporting ? null : (values) => setState(() { _targetLongEdge = values.first; _enhancedVideo = null; _exportEstimateMessage = _estimateExportSize(); }),
@@ -761,7 +761,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: FilledButton.icon(
             onPressed: _exporting || _busy ? null : _enhanceVideo,
             icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome_rounded),
-            label: Text(_exporting ? 'Processing and encoding…' : 'Process video · ${_targetLongEdge == -1 ? 'Auto / 1080p minimum' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : '1080p'}'),
+            label: Text(_exporting ? 'Improving video quality…' : 'Process video · ${_targetLongEdge == -1 ? 'Auto / 1080p minimum' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 2560 ? '1440p' : '1080p'}'),
           ),
         ),
         if (_exportEstimateMessage != null) ...[
@@ -1318,7 +1318,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _toolCard(
         icon: Icons.high_quality_rounded,
         title: 'Quality studio',
-        detail: 'Detect the source, then use Auto or choose 360p, 480p, 720p or 1080p. Keep the original untouched.',
+        detail: 'Detect the source, then choose Auto, 480p, 720p, 1080p or 1440p. Improve the picture and preview the processed copy before saving or sharing.',
         badge: 'QUALITY',
         onTap: () {
           setState(() => _tab = 0);
@@ -1432,7 +1432,7 @@ class _HomeScreenState extends State<HomeScreen> {
       const SizedBox(height: 24),
       _sectionTitle('MEDIA & PRIVACY'),
       const SizedBox(height: 10),
-      _infoTile(Icons.high_quality_outlined, 'Quality-aware exports', 'Export status videos at high-quality 1080p by default, or choose a smaller size when you need to save storage. The original file stays unchanged.'),
+      _infoTile(Icons.high_quality_outlined, 'Video quality improvement', 'Choose 480p, 720p, 1080p or 1440p, tune brightness, contrast and colour, then preview the processed copy before saving. The original stays unchanged.'),
       _infoTile(Icons.folder_open_outlined, 'Your library stays yours', 'Media is selected through the system picker. This app does not upload your files to a server.'),
       _infoTile(Icons.privacy_tip_outlined, 'No account required', 'No login or cloud account is needed for the current core workflow.'),
       const SizedBox(height: 24),
