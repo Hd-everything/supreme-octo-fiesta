@@ -54,7 +54,9 @@ private class DetailSharpenEffect(private val amount: Float = 0.22f) : Separable
 class MainActivity : FlutterActivity() {
     private val channelName = "com.ptip.statushd/media"
     private var pendingVideoLibraryResult: MethodChannel.Result? = null
+    private var pendingMediaLibraryResult: MethodChannel.Result? = null
     private val videoLibraryRequestCode = 7001
+    private val mediaLibraryRequestCode = 7002
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -105,6 +107,27 @@ class MainActivity : FlutterActivity() {
                 } else {
                     pendingVideoLibraryResult = result
                     requestPermissions(arrayOf(permission), videoLibraryRequestCode)
+                }
+                return@setMethodCallHandler
+            }
+            if (call.method == "listDeviceMedia") {
+                val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
+                } else {
+                    arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                }
+                val granted = permissions.all { checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
+                if (granted) {
+                    try {
+                        result.success(queryDeviceMedia())
+                    } catch (error: Exception) {
+                        result.error("media_query_failed", error.message ?: "Could not scan device media.", null)
+                    }
+                } else if (pendingMediaLibraryResult != null) {
+                    result.error("permission_pending", "Media library permission is already being requested.", null)
+                } else {
+                    pendingMediaLibraryResult = result
+                    requestPermissions(permissions, mediaLibraryRequestCode)
                 }
                 return@setMethodCallHandler
             }
@@ -271,6 +294,15 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == mediaLibraryRequestCode) {
+            val callback = pendingMediaLibraryResult ?: return
+            pendingMediaLibraryResult = null
+            if (grantResults.isNotEmpty() && grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED }) {
+                try { callback.success(queryDeviceMedia()) }
+                catch (error: Exception) { callback.error("media_query_failed", error.message ?: "Could not scan device media.", null) }
+            } else { callback.success(emptyList<Map<String, Any>>()) }
+            return
+        }
         if (requestCode != videoLibraryRequestCode) return
         val callback = pendingVideoLibraryResult ?: return
         pendingVideoLibraryResult = null
@@ -297,6 +329,39 @@ class MainActivity : FlutterActivity() {
             }
         }
         return videos
+    }
+
+    private fun queryDeviceMedia(): List<Map<String, Any>> {
+        val media = mutableListOf<Map<String, Any>>()
+        fun query(uri: Uri, isVideo: Boolean) {
+            val projection = if (isVideo) {
+                arrayOf(MediaStore.Video.Media.DATA, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.SIZE, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_MODIFIED)
+            } else {
+                arrayOf(MediaStore.Images.Media.DATA, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.SIZE, MediaStore.Images.Media.DATE_MODIFIED)
+            }
+            contentResolver.query(uri, projection, null, null, "date_modified DESC")?.use { cursor ->
+                val pathColumn = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                val nameColumn = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                val sizeColumn = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                val durationColumn = if (isVideo) cursor.getColumnIndex(MediaStore.Video.Media.DURATION) else -1
+                val modifiedColumn = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+                while (cursor.moveToNext()) {
+                    val path = if (pathColumn >= 0 && !cursor.isNull(pathColumn)) cursor.getString(pathColumn) else null
+                    if (path.isNullOrBlank() || !File(path).isFile) continue
+                    media.add(mapOf(
+                        "path" to path,
+                        "name" to if (nameColumn >= 0 && !cursor.isNull(nameColumn)) cursor.getString(nameColumn) else if (isVideo) "Video" else "Photo",
+                        "size" to if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) cursor.getLong(sizeColumn) else 0L,
+                        "duration" to if (durationColumn >= 0 && !cursor.isNull(durationColumn)) cursor.getLong(durationColumn) else 0L,
+                        "modified" to if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) cursor.getLong(modifiedColumn) else 0L,
+                        "type" to if (isVideo) "video" else "image"
+                    ))
+                }
+            }
+        }
+        query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true)
+        query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false)
+        return media.sortedByDescending { (it["modified"] as? Long) ?: 0L }
     }
     private fun saveVideoToGallery(inputPath: String, displayName: String): android.net.Uri {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {

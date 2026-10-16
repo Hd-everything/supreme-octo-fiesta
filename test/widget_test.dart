@@ -16,13 +16,13 @@ void main() {
     expect(find.text('Status HD starts with a\nclip from your phone.'), findsOneWidget);
     expect(find.text('Studio'), findsOneWidget);
     expect(find.text('Tools'), findsOneWidget);
-    expect(find.text('Settings'), findsNothing);
+    expect(find.text('Settings'), findsOneWidget);
     expect(find.byTooltip('Open movie player'), findsOneWidget);
     expect(find.text('Movie Player'), findsOneWidget);
 
     await tester.tap(find.text('Tools'));
     await tester.pumpAndSettle();
-    expect(find.text('Tools'), findsOneWidget);
+    expect(find.text('Tools'), findsWidgets);
     expect(find.text('Movie Player'), findsOneWidget);
     expect(find.text('Status HD'), findsOneWidget);
 

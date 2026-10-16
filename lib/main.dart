@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'media_manager_screen.dart';
 import 'movie_player_screen.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
@@ -244,7 +245,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final ImagePicker _picker = ImagePicker();
   XFile? _selected;
   bool _busy = false;
   String? _message;
@@ -360,8 +360,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _pickMedia() async {
     try {
-      final file = await _picker.pickMedia();
-      if (file == null || !mounted) return;
+      final picked = await Navigator.of(context).push<DeviceMedia>(
+        MaterialPageRoute(builder: (_) => const MediaManagerScreen()),
+      );
+      if (picked == null || !mounted) return;
+      final file = XFile(picked.path, name: picked.name);
       await _videoController?.dispose();
       await _enhancedPreviewController?.dispose();
       _videoController = null;
@@ -1108,6 +1111,8 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _homeContent(accent),
             _toolsContent(accent),
+            const SizedBox.shrink(),
+            _settingsContent(accent),
           ],
         ),
       ),
@@ -1127,6 +1132,7 @@ class _HomeScreenState extends State<HomeScreen> {
           NavigationDestination(icon: Icon(Icons.grid_view_rounded), selectedIcon: Icon(Icons.grid_view_rounded), label: 'Studio'),
           NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library_rounded), label: 'Tools'),
           NavigationDestination(icon: Icon(Icons.play_circle_outline_rounded), selectedIcon: Icon(Icons.play_circle_fill_rounded), label: 'Movie Player'),
+          NavigationDestination(icon: Icon(Icons.tune_outlined), selectedIcon: Icon(Icons.tune_rounded), label: 'Settings'),
         ],
       ),
       drawer: null,
@@ -1701,12 +1707,12 @@ class _HomeScreenState extends State<HomeScreen> {
     children: [
       const Text('Settings', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -1)),
       const SizedBox(height: 8),
-      const Text('Simple controls for your media workflow.', style: TextStyle(color: Colors.white60)),
+      const Text('A private, device-first setup for your media workflow.', style: TextStyle(color: Colors.white60)),
       const SizedBox(height: 24),
       _sectionTitle('MEDIA & PRIVACY'),
       const SizedBox(height: 10),
       _infoTile(Icons.high_quality_outlined, 'Video quality improvement', 'Choose 480p, 720p, 1080p or 1440p, tune brightness, contrast and colour, then preview the processed copy before saving. The original stays unchanged.'),
-      _infoTile(Icons.folder_open_outlined, 'Your library stays yours', 'Media is selected through the system picker. This app does not upload your files to a server.'),
+      _infoTile(Icons.photo_library_outlined, 'Your library stays yours', 'Choose media in Status HD’s own library. Your files stay on this device and are never uploaded to a server.'),
       _infoTile(Icons.privacy_tip_outlined, 'No account required', 'No login or cloud account is needed for the current core workflow.'),
       const SizedBox(height: 24),
       _sectionTitle('ABOUT'),

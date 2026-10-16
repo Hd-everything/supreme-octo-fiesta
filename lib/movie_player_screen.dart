@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'media_manager_screen.dart';
 
 /// A focused, cinema-style local movie player using libmpv/media_kit.
 /// Video enhancement uses the app's native Media3 encoder; it does not upload
@@ -126,7 +127,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       }
       if (mounted) setState(() { _videos = next; _error = null; });
     } catch (_) {
-      if (mounted) setState(() => _error = 'Could not scan device videos. Use Browse files to choose a video.');
+      if (mounted) setState(() => _error = 'Could not scan device videos. Refresh after allowing media access.');
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
@@ -134,11 +135,11 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   Future<void> _browse() async {
     try {
-      final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: _extensions, allowMultiple: false, withData: false);
-      if (result == null || result.files.isEmpty || !mounted) return;
-      final file = result.files.single;
-      if (file.path == null) throw StateError('This file provider did not return a readable path.');
-      await _open(file.path!, file.name);
+      final selected = await Navigator.of(context).push<DeviceMedia>(
+        MaterialPageRoute(builder: (_) => const MediaManagerScreen(videosOnly: true)),
+      );
+      if (selected == null || !mounted) return;
+      await _open(selected.path, selected.name);
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not open that video: $e');
     }
@@ -276,23 +277,23 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
           Container(width:48,height:48,decoration:BoxDecoration(color:_accent.withValues(alpha:.16),borderRadius:BorderRadius.circular(15)),child:Icon(Icons.movie_filter_rounded,color:_accent,size:27)),
           const SizedBox(width:12),
           const Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
-            Text('YOUR MOVIE LIBRARY',style:TextStyle(color:Colors.white54,fontSize:10,fontWeight:FontWeight.w800,letterSpacing:1.7)),
+            Text('MOVIE PLAYER',style:TextStyle(color:Colors.white54,fontSize:10,fontWeight:FontWeight.w800,letterSpacing:1.7)),
             SizedBox(height:4),
-            Text('What shall we watch?',style:TextStyle(fontSize:23,fontWeight:FontWeight.w900,letterSpacing:-.6)),
+            Text('Your cinema,\non your device.',style:TextStyle(fontSize:25,height:1.02,fontWeight:FontWeight.w900,letterSpacing:-.8)),
           ])),
           PopupMenuButton<String>(onSelected:(value)=>setState(()=>_sortBy=value),itemBuilder:(_)=>const [PopupMenuItem(value:'Recent',child:Text('Sort: device order')),PopupMenuItem(value:'Name',child:Text('Sort: name'))],icon:const Icon(Icons.sort_rounded)),
         ]),
         const SizedBox(height:17),
         TextField(controller:_search,onChanged:(_)=>setState((){}),decoration:InputDecoration(hintText:'Search videos',prefixIcon:const Icon(Icons.search_rounded),filled:true,fillColor:const Color(0xFF17181D),border:OutlineInputBorder(borderRadius:BorderRadius.circular(16),borderSide:BorderSide.none))),
         const SizedBox(height:12),
-        SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:_opening?null:_browse,icon:const Icon(Icons.folder_open_rounded),label:const Text('Browse videos'))),
+        SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:_opening?null:_browse,icon:const Icon(Icons.video_library_rounded),label:const Text('Open media manager'))),
         if(_recent.isNotEmpty) ...[
           _section('Continue watching',trailing:Text('${_recent.length} recent',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
           for(final movie in _recent.take(3)) _posterRow(movie,recent:true),
         ],
-        _section('On this device',trailing:Text(_scanning?'Scanning…':'${filtered.length} videos',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
+        _section('Your library',trailing:Text(_scanning?'Scanning…':'${filtered.length} videos',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
         if (_scanning) const LinearProgressIndicator(),
-        if (filtered.isEmpty && !_scanning) Center(child:Padding(padding:const EdgeInsets.symmetric(vertical:30),child:Column(children:[Icon(q.isEmpty?Icons.video_library_outlined:Icons.search_off_rounded,size:42,color:Colors.white38),const SizedBox(height:12),Text(q.isEmpty?'No videos found yet':'No videos match your search.',style:const TextStyle(color:Colors.white70,fontWeight:FontWeight.w700)),const SizedBox(height:5),Text(q.isEmpty?'Browse files or refresh after granting media access.':'Try another title or clear the search.',style:const TextStyle(color:Colors.white54,fontSize:12))]))),
+        if (filtered.isEmpty && !_scanning) Center(child:Padding(padding:const EdgeInsets.symmetric(vertical:30),child:Column(children:[Icon(q.isEmpty?Icons.video_library_outlined:Icons.search_off_rounded,size:42,color:Colors.white38),const SizedBox(height:12),Text(q.isEmpty?'No videos found yet':'No videos match your search.',style:const TextStyle(color:Colors.white70,fontWeight:FontWeight.w700)),const SizedBox(height:5),Text(q.isEmpty?'Open the media manager or refresh after granting media access.':'Try another title or clear the search.',style:const TextStyle(color:Colors.white54,fontSize:12))]))),
         for(final movie in filtered) _posterRow(movie),
         if (_error!=null) Padding(padding:const EdgeInsets.only(top:12),child:Text(_error!,style:TextStyle(color:Theme.of(context).colorScheme.error))),
       ]),
@@ -449,7 +450,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor:const Color(0xFF08090B),
-    appBar:_watching?null:AppBar(title:const Text('Movie Player',style:TextStyle(fontWeight:FontWeight.w800)),actions:[IconButton(onPressed:_browse,icon:const Icon(Icons.folder_open_rounded))]),
+    appBar:_watching?null:AppBar(title:const Text('Movie Player',style:TextStyle(fontWeight:FontWeight.w800)),actions:[IconButton(tooltip:'Open media manager',onPressed:_browse,icon:const Icon(Icons.video_library_rounded))]),
     body:SafeArea(child:_watching?_watch():_library()),
   );
 }
