@@ -13,7 +13,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('STATUS HD'), findsOneWidget);
-    expect(find.text('Make your status\nlook its best.'), findsOneWidget);
+    expect(find.text('Status HD starts with a\nclip from your phone.'), findsOneWidget);
     expect(find.text('Studio'), findsOneWidget);
     expect(find.text('Tools'), findsOneWidget);
     expect(find.text('Settings'), findsNothing);
@@ -22,9 +22,9 @@ void main() {
 
     await tester.tap(find.text('Tools'));
     await tester.pumpAndSettle();
-    expect(find.text('Studio tools'), findsOneWidget);
+    expect(find.text('Tools'), findsOneWidget);
     expect(find.text('Movie Player'), findsOneWidget);
-    expect(find.text('Quality studio'), findsOneWidget);
+    expect(find.text('Status HD'), findsOneWidget);
 
     // The trim/split card is lower in the scrollable tools list and may not
     // be mounted until it is brought into view.

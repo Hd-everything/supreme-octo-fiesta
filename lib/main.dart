@@ -14,7 +14,7 @@ import 'package:video_player/video_player.dart';
 const _mediaChannel = MethodChannel('com.ptip.statushd/media');
 
 const _accentChoices = <Color>[
-  Color(0xFF55E6A5),
+  Color(0xFF42C7C7),
   Color(0xFF72A7FF),
   Color(0xFFB79CFF),
   Color(0xFFFFA36C),
@@ -130,9 +130,9 @@ class _StatusHdAppState extends State<StatusHdApp> {
   Widget build(BuildContext context) {
     // The app stays dark; AMOLED toggles only the dark surface palette.
     const brightness = Brightness.dark;
-    final background = _amoled ? const Color(0xFF050706) : const Color(0xFF101512);
-    final surface = _amoled ? const Color(0xFF111613) : const Color(0xFF1A211D);
-    const foreground = Color(0xFFF1F6F2);
+    final background = _amoled ? const Color(0xFF090B10) : const Color(0xFF101319);
+    final surface = _amoled ? const Color(0xFF15191F) : const Color(0xFF1B2028);
+    const foreground = Color(0xFFF4F1EA);
     final scheme = ColorScheme.fromSeed(
       seedColor: accent,
       brightness: brightness,
@@ -1164,7 +1164,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Text('STATUS HD', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 2.2)),
                         SizedBox(height: 2),
-                        Text('Sharper statuses. Smooth playback.', style: TextStyle(color: Colors.white60, fontSize: 12)),
+                        Text('Sharper WhatsApp Status. Your original is never changed.', style: TextStyle(color: Colors.white60, fontSize: 12)),
                       ],
                     ),
                   ),
@@ -1180,18 +1180,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 28),
-              Text('Make your status\nlook its best.', style: TextStyle(fontSize: widget.compact ? 30 : 36, height: 1.04, fontWeight: FontWeight.w800, letterSpacing: -1.25)),
+              const SizedBox(height: 32),
+              Text('Status HD starts with a\nclip from your phone.', style: TextStyle(fontSize: widget.compact ? 30 : 36, height: 1.06, fontWeight: FontWeight.w800, letterSpacing: -1.15)),
               const SizedBox(height: 12),
-              const Text('Choose a video, select the output resolution, process it, then inspect the encoded result right here.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
+              const Text('Choose a photo or video, preview it, then prepare a separate copy for Status. The source stays untouched.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
               const SizedBox(height: 18),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _featurePill(Icons.high_quality_rounded, 'Auto quality', accent),
+                  _featurePill(Icons.high_quality_rounded, 'Quality-ready', accent),
                   _featurePill(Icons.lock_outline_rounded, 'Original preserved', accent),
-                  _featurePill(Icons.phone_android_rounded, 'WhatsApp-ready', accent),
+                  _featurePill(Icons.phone_android_rounded, 'Made for Status', accent),
                 ],
               ),
               const SizedBox(height: 18),
@@ -1362,12 +1362,19 @@ class _HomeScreenState extends State<HomeScreen> {
     onTap: _pickMedia,
     borderRadius: BorderRadius.circular(widget.rounded ? 26 : 12),
     child: Container(
-      height: 220,
+      height: 252,
       width: double.infinity,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
+        gradient: widget.gradients
+            ? LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [accent.withValues(alpha: .18), Theme.of(context).colorScheme.surface, const Color(0xFF10151A)],
+              )
+            : null,
+        color: widget.gradients ? null : Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(widget.rounded ? 26 : 12),
-        border: Border.all(color: accent.withValues(alpha: .38), width: 1.2),
+        border: Border.all(color: accent.withValues(alpha: .28), width: 1.2),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -1376,14 +1383,14 @@ class _HomeScreenState extends State<HomeScreen> {
             height: 62,
             width: 62,
             decoration: BoxDecoration(color: accent.withValues(alpha: .13), shape: BoxShape.circle),
-            child: Icon(Icons.add_photo_alternate_outlined, color: accent, size: 30),
+            child: Icon(Icons.add_rounded, color: accent, size: 30),
           ),
           const SizedBox(height: 16),
-          const Text('Choose a photo or video', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          const Text('Choose a photo or video', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
           const Text('Original file • No forced compression', style: TextStyle(color: Colors.white54, fontSize: 12)),
           const SizedBox(height: 16),
-          FilledButton.icon(onPressed: _pickMedia, icon: const Icon(Icons.add_rounded), label: const Text('Select media')),
+          FilledButton.icon(onPressed: _pickMedia, icon: const Icon(Icons.add_rounded), label: const Text('Choose from device')),
         ],
       ),
     ),
@@ -1532,9 +1539,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _toolsContent(Color accent) => ListView(
     padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
     children: [
-      const Text('Studio tools', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -1.1)),
+      const Text('Tools', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -1.1)),
       const SizedBox(height: 8),
-      const Text('Prepare status videos at higher quality, cut long clips into parts, or settle in with the local movie player.', style: TextStyle(color: Colors.white60, height: 1.5)),
+      const Text('Everything you need, in two places. Prepare a Status or settle in with a movie.', style: TextStyle(color: Colors.white60, height: 1.5)),
       const SizedBox(height: 20),
       Container(
         padding: const EdgeInsets.all(18),
@@ -1560,9 +1567,9 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('One home for every video', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                  Text('Each app has its own door', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
                   SizedBox(height: 5),
-                  Text('Prepare a WhatsApp status here. Watch full movies in the separate player.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.45)),
+                  Text('Use Status HD for preparing media. Use Movie player for comfortable playback.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.45)),
                 ],
               ),
             ),
@@ -1580,9 +1587,9 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       _toolCard(
         icon: Icons.high_quality_rounded,
-        title: 'Quality studio',
-        detail: 'Detect the source, then choose Auto, 480p, 720p, 1080p or 1440p. Improve the picture and preview the processed copy before saving or sharing.',
-        badge: 'QUALITY',
+        title: 'Status HD',
+        detail: 'Prepare photos and videos for WhatsApp Status without recompressing your originals. Preview the result before sharing.',
+        badge: 'STATUS HD',
         onTap: () {
           setState(() => _tab = 0);
           unawaited(_pickMedia());
@@ -1643,7 +1650,9 @@ class _HomeScreenState extends State<HomeScreen> {
     required String badge,
     required VoidCallback onTap,
     required Color accent,
-  }) => Padding(
+  }) {
+    final tone = badge == 'PLAYER' ? const Color(0xFFFFB755) : accent;
+    return Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: Material(
       color: Theme.of(context).colorScheme.surface,
@@ -1659,10 +1668,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 width: 50,
                 height: 50,
                 decoration: BoxDecoration(
-                  color: accent.withValues(alpha: .12),
+                  color: tone.withValues(alpha: .12),
                   borderRadius: BorderRadius.circular(15),
                 ),
-                child: Icon(icon, color: accent, size: 25),
+                child: Icon(icon, color: tone, size: 25),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -1673,18 +1682,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 5),
                     Text(detail, style: const TextStyle(color: Colors.white60, fontSize: 12, height: 1.4)),
                     const SizedBox(height: 9),
-                    Text(badge, style: TextStyle(color: accent, fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.5)),
+                    Text(badge, style: TextStyle(color: tone, fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.5)),
                   ],
                 ),
               ),
               const SizedBox(width: 8),
-              Icon(Icons.arrow_forward_rounded, color: accent),
+              Icon(Icons.arrow_forward_rounded, color: tone),
             ],
           ),
         ),
       ),
     ),
   );
+  }
 
   Widget _settingsContent(Color accent) => ListView(
     padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
