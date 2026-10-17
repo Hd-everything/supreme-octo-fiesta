@@ -85,18 +85,19 @@ jobs:
           # Gradle before project evaluation, so it also covers plugin subprojects.
           mkdir -p "$HOME/.gradle"
           cat > "$HOME/.gradle/init.gradle" <<'EOF'
+          import org.gradle.api.JavaVersion
           import org.gradle.api.tasks.compile.JavaCompile
+          import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
-          allprojects { project ->
-              project.afterEvaluate {
-                  project.tasks.configureEach { task ->
-                      if (task instanceof JavaCompile) {
-                          task.sourceCompatibility = '17'
-                          task.targetCompatibility = '17'
-                      }
-                      if (task.class.name.contains('KotlinCompile')) {
-                          try { task.kotlinOptions.jvmTarget = '17' } catch (Exception ignored) {}
-                      }
+          // Apply matching Java/Kotlin bytecode targets across the app and plugins.
+          gradle.projectsEvaluated {
+              allprojects { project ->
+                  project.tasks.withType(JavaCompile).configureEach {
+                      sourceCompatibility = JavaVersion.VERSION_17.toString()
+                      targetCompatibility = JavaVersion.VERSION_17.toString()
+                  }
+                  project.tasks.withType(KotlinCompile).configureEach {
+                      kotlinOptions.jvmTarget = JavaVersion.VERSION_17.toString()
                   }
               }
           }
