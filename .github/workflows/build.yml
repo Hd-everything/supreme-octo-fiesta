@@ -80,9 +80,9 @@ jobs:
           manifest.write_text(source)
           PY
 
-          # Do not inject a global Gradle init script: it changes JavaCompile
-          # tasks in Android plugin projects and can remove the Android boot classpath.
-          # The generated Flutter Android project already configures Java 17.
+          # The generated Flutter app configures Java 17, but tflite_flutter is
+          # a separate Gradle project and may still default its Java task to 11.
+          # Its plugin build file is patched after dependency resolution below.
           printf '\nkotlin.jvm.target.validation.mode=warning\n' >> /tmp/statushd/gradle.properties
 
       - name: Set Android compile SDK for current plugins
@@ -214,6 +214,26 @@ jobs:
       - name: Resolve dependencies
         working-directory: /tmp/statushd
         run: flutter pub get
+
+      - name: Align tflite_flutter JVM targets
+        working-directory: /tmp/statushd
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          cache = Path(os.environ.get("PUB_CACHE", str(Path.home() / ".pub-cache")))
+          candidates = sorted(cache.glob("hosted/*/tflite_flutter-*/android/build.gradle*"))
+          if not candidates:
+              raise SystemExit("Could not locate the resolved tflite_flutter Android project")
+          gradle = candidates[-1]
+          source = gradle.read_text()
+          marker = "// StatusHD JVM target alignment"
+          if marker not in source:
+              source += f'''\n\n{marker}\nafterEvaluate {{\n    tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{\n        sourceCompatibility = "17"\n        targetCompatibility = "17"\n        options.release.set(17)\n    }}\n    tasks.matching {{ it.class.name.contains("KotlinCompile") }}.configureEach {{ task ->\n        try {{ task.kotlinOptions.jvmTarget = "17" }} catch (Exception ignored) {{}}\n    }}\n}}\n'''
+              gradle.write_text(source)
+          print(f"Aligned JVM targets in {gradle}")
+          PY
 
       - name: Generate Android launcher icon
         working-directory: /tmp/statushd
