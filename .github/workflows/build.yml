@@ -27,8 +27,8 @@ jobs:
           # Remove preinstalled toolchains and Android emulator images not used by this build.
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/powershell
           sudo rm -rf "${ANDROID_HOME}/system-images" "${ANDROID_HOME}/emulator"
-          # The build installs and uses one pinned NDK version below.
-          sudo rm -rf "${ANDROID_HOME}/ndk"
+          # Keep runner-provided NDKs. Removing them forces a large network
+          # download and makes builds fail on transient SDK mirror errors.
           df -h /
 
       - name: Set up Java
@@ -176,17 +176,24 @@ jobs:
           set -euo pipefail
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
           NDK_VERSION="28.2.13676358"
-          for attempt in 1 2 3; do
-            echo "Installing Android NDK ${NDK_VERSION} (attempt ${attempt}/3)"
-            if "${SDKMANAGER}" --install "ndk;${NDK_VERSION}" --sdk_root="${ANDROID_HOME}"; then
-              test -f "${ANDROID_HOME}/ndk/${NDK_VERSION}/source.properties"
-              exit 0
+          NDK_DIR="${ANDROID_HOME}/ndk/${NDK_VERSION}"
+          if [ -f "${NDK_DIR}/source.properties" ]; then
+            echo "Using preinstalled Android NDK ${NDK_VERSION}."
+            exit 0
+          fi
+          for attempt in 1 2 3 4 5; do
+            echo "Installing Android NDK ${NDK_VERSION} (attempt ${attempt}/5)"
+            if yes | "${SDKMANAGER}" --install "ndk;${NDK_VERSION}" --sdk_root="${ANDROID_HOME}"; then
+              if [ -f "${NDK_DIR}/source.properties" ]; then
+                exit 0
+              fi
             fi
-            echo "NDK install failed; removing incomplete package before retry."
-            rm -rf "${ANDROID_HOME}/ndk/${NDK_VERSION}"
-            sleep $((attempt * 10))
+            echo "NDK install incomplete; removing only the partial requested package before retry."
+            rm -rf "${NDK_DIR}"
+            sleep $((attempt * 15))
           done
-          echo "::error::Android NDK installation failed after 3 attempts."
+          echo "::error::Android NDK ${NDK_VERSION} installation failed after 5 attempts."
+          "${SDKMANAGER}" --list --sdk_root="${ANDROID_HOME}" | tail -n 80 || true
           exit 1
 
       - name: Copy app source into generated project
