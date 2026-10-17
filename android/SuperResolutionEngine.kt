@@ -1,6 +1,7 @@
 package com.ptip.statushd
 
 import android.content.Context
+import android.graphics.Bitmap
 import org.tensorflow.lite.Interpreter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -27,6 +28,10 @@ class SuperResolutionEngine(private val context: Context) : AutoCloseable {
         } catch (error: Exception) {
             close(); mapOf("ready" to false, "reason" to (error.message ?: "model_initialization_failed"))
         }
+    }
+
+    fun upscaleFrame(frame: Bitmap, outputWidth: Int, outputHeight: Int): Bitmap {
+        return NeuralFrameProcessor(loadModel()).upscaleFrame(frame, outputWidth, outputHeight)
     }
 
     private fun loadModel(): Interpreter {
