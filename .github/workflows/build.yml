@@ -154,13 +154,14 @@ jobs:
           dependencies = (
               "androidx.media3:media3-transformer",
               "androidx.media3:media3-effect",
+              "org.tensorflow:tensorflow-lite",
           )
           if not all(dep in source for dep in dependencies):
               if gradle.suffix == ".kts":
-                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n'
+                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n    implementation("org.tensorflow:tensorflow-lite:2.16.1")\n'
                   pattern = r"dependencies\s*\{"
               else:
-                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n'
+                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n    implementation "org.tensorflow:tensorflow-lite:2.16.1"\n'
                   pattern = r"dependencies\s*\{"
               match = re.search(pattern, source)
               if match:
@@ -181,9 +182,13 @@ jobs:
             echo "Using preinstalled Android NDK ${NDK_VERSION}."
             exit 0
           fi
+          # Accept SDK licenses separately. Do not pipe `yes` into the install
+          # command: sdkmanager exits successfully after extraction, while `yes`
+          # receives SIGPIPE and makes a pipefail-enabled shell report failure.
+          yes | "${SDKMANAGER}" --licenses --sdk_root="${ANDROID_HOME}" >/dev/null 2>&1 || true
           for attempt in 1 2 3 4 5; do
             echo "Installing Android NDK ${NDK_VERSION} (attempt ${attempt}/5)"
-            if yes | "${SDKMANAGER}" --install "ndk;${NDK_VERSION}" --sdk_root="${ANDROID_HOME}"; then
+            if "${SDKMANAGER}" --install "ndk;${NDK_VERSION}" --sdk_root="${ANDROID_HOME}"; then
               if [ -f "${NDK_DIR}/source.properties" ]; then
                 exit 0
               fi
