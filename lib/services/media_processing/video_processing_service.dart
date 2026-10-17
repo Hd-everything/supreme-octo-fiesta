@@ -217,5 +217,13 @@ class VideoProcessingService {
     }
   }
 
+  Future<ProcessingResult> processNeural({required String inputPath, required String outputPath, required VideoMetadata metadata, required int outputWidth, required int outputHeight}) async {
+    if (!metadata.isValid || !File(inputPath).existsSync()) throw const ProcessingValidationException('The source video is no longer available.');
+    final result = await _channel.invokeMapMethod<String, dynamic>('processNeuralVideo', {'inputPath': inputPath, 'outputPath': outputPath, 'outputWidth': outputWidth, 'outputHeight': outputHeight});
+    final path = result?['path']?.toString();
+    if (path == null || !File(path).existsSync() || await File(path).length() == 0) throw const ProcessingValidationException('Neural processing did not create a readable output file.');
+    return ProcessingResult(path: path, metadata: await inspect(path));
+  }
+
   Future<void> cancel() => _channel.invokeMethod<void>('cancelProcessing');
 }

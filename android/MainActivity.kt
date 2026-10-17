@@ -187,6 +187,26 @@ class MainActivity : FlutterActivity() {
                 catch (error: Exception) { activeTransformer = null; outputFile.delete(); result.error("processing_start_failed", error.message ?: "Could not start processing.", null) }
                 return@setMethodCallHandler
             }
+            if (call.method == "processNeuralVideo") {
+                val inputPath = call.argument<String>("inputPath")
+                val outputPath = call.argument<String>("outputPath")
+                val width = call.argument<Int>("outputWidth") ?: 0
+                val height = call.argument<Int>("outputHeight") ?: 0
+                if (inputPath.isNullOrBlank() || outputPath.isNullOrBlank() || !File(inputPath).isFile || width < 2 || height < 2) {
+                    result.error("invalid_neural_arguments", "Choose a valid source and neural output size.", null)
+                    return@setMethodCallHandler
+                }
+                Thread {
+                    try {
+                        val engine = superResolutionEngine ?: SuperResolutionEngine(this).also { superResolutionEngine = it }
+                        val output = NeuralVideoProcessor(engine).process(inputPath, outputPath, width, height)
+                        runOnUiThread { result.success(mapOf("path" to output.absolutePath, "neural" to true, "scale" to 3)) }
+                    } catch (error: Exception) {
+                        runOnUiThread { result.error("neural_processing_failed", error.message ?: "Neural processing failed.", null) }
+                    }
+                }.start()
+                return@setMethodCallHandler
+            }
             if (call.method == "getVideoDimensions") {
                 val path = call.argument<String>("path")
                 if (path.isNullOrBlank() || !File(path).isFile) {

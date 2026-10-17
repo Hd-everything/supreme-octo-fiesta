@@ -514,20 +514,9 @@ class _HomeScreenState extends State<HomeScreen> {
           : _targetLongEdge == 1280
               ? OutputResolution.p720
               : OutputResolution.p1080;
-      final processed = await _processing.process(ProcessingRequest.enhance(
-        inputPath: file.path,
-        outputPath: output,
-        metadata: metadata,
-        enhancement: EnhancementConfiguration(
-          resolution: resolution,
-          brightness: _brightnessBoost,
-          contrast: _contrastBoost,
-          saturation: _saturationBoost,
-          outputWidth: outputWidth,
-          outputHeight: outputHeight,
-          watermark: !_watermarkFreeUnlocked,
-        ),
-      ));
+      final processed = _processingMode == StudioProcessingMode.neural
+          ? await _processing.processNeural(inputPath: file.path, outputPath: output, metadata: metadata, outputWidth: outputWidth, outputHeight: outputHeight)
+          : await _processing.process(ProcessingRequest.enhance(inputPath: file.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: !_watermarkFreeUnlocked)));
       final processedPath = processed.path;
       if (_cancelExportRequested) {
         try { await File(processedPath).delete(); } catch (_) {}

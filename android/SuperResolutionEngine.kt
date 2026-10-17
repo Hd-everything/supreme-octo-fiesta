@@ -23,7 +23,7 @@ class SuperResolutionEngine(private val context: Context) : AutoCloseable {
                 val inputBuffer = ByteBuffer.allocateDirect(1 * 3 * 64 * 64 * 4).order(ByteOrder.nativeOrder())
                 val outputBuffer = ByteBuffer.allocateDirect(1 * 3 * 192 * 192 * 4).order(ByteOrder.nativeOrder())
                 model.run(inputBuffer, outputBuffer)
-                mapOf("ready" to true, "scale" to 3, "backend" to "tensorflow-lite-cpu", "benchmarkMs" to ((System.nanoTime() - started) / 1_000_000L))
+                mapOf("ready" to true, "videoPipeline" to true, "scale" to 3, "backend" to "tensorflow-lite-cpu", "benchmarkMs" to ((System.nanoTime() - started) / 1_000_000L))
             }
         } catch (error: Exception) {
             close(); mapOf("ready" to false, "reason" to (error.message ?: "model_initialization_failed"))
