@@ -67,11 +67,16 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           manifest = Path("/tmp/statushd/android/app/src/main/AndroidManifest.xml")
           source = manifest.read_text()
           metadata = '        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8529698532324480~6965542136" />'
           if "com.google.android.gms.ads.APPLICATION_ID" not in source:
-              source = source.replace("<application", "<application\n" + metadata, 1)
+              match = re.search(r"<application\b([^>]*)>", source)
+              if not match:
+                  raise SystemExit("Could not find the generated application manifest tag")
+              application = f"<application{match.group(1)}>\n{metadata}"
+              source = source[:match.start()] + application + source[match.end():]
           manifest.write_text(source)
           PY
 
