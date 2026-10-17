@@ -45,6 +45,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   double _zoom = 1;
   String _sortBy = 'Recent';
   String _libraryTab = 'All';
+  bool _gridView = false;
   Timer? _hideTimer;
   Timer? _resumeTimer;
   Timer? _sleepTimer;
@@ -325,6 +326,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
             SizedBox(height:4),
             Text('Your cinema,\non your device.',style:TextStyle(fontSize:25,height:1.02,fontWeight:FontWeight.w900,letterSpacing:-.8)),
           ])),
+          IconButton(tooltip: _gridView ? 'List view' : 'Grid view', onPressed: () => setState(() => _gridView = !_gridView), icon: Icon(_gridView ? Icons.view_list_rounded : Icons.grid_view_rounded)),
           PopupMenuButton<String>(onSelected:(value)=>setState(()=>_sortBy=value),itemBuilder:(_)=>const [PopupMenuItem(value:'Recent',child:Text('Sort: device order')),PopupMenuItem(value:'Name',child:Text('Sort: name')),PopupMenuItem(value:'Favorites',child:Text('Show favorites'))],icon:const Icon(Icons.sort_rounded)),
         ]),
         const SizedBox(height:17),
@@ -340,10 +342,31 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         _section('Your library',trailing:Text(_scanning?'Scanning…':'${filtered.length} videos',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
         if (_scanning) const LinearProgressIndicator(),
         if (filtered.isEmpty && !_scanning) Center(child:Padding(padding:const EdgeInsets.symmetric(vertical:30),child:Column(children:[Icon(q.isEmpty?Icons.video_library_outlined:Icons.search_off_rounded,size:42,color:Colors.white38),const SizedBox(height:12),Text(q.isEmpty?'No videos found yet':'No videos match your search.',style:const TextStyle(color:Colors.white70,fontWeight:FontWeight.w700)),const SizedBox(height:5),Text(q.isEmpty?'Open the media manager or refresh after granting media access.':'Try another title or clear the search.',style:const TextStyle(color:Colors.white54,fontSize:12))]))),
-        for(final movie in filtered) _posterRow(movie),
+        if (_gridView)
+          GridView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: filtered.length, gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 1.35), itemBuilder: (_, index) => _gridTile(filtered[index]))
+        else
+          for(final movie in filtered) _posterRow(movie),
         if (_error!=null) Padding(padding:const EdgeInsets.only(top:12),child:Text(_error!,style:TextStyle(color:Theme.of(context).colorScheme.error))),
       ]),
     ),if(_hasMedia) Positioned(left:12,right:12,bottom:12,child:_miniPlayer())]);
+  }
+
+  Widget _gridTile(Map<String, String> movie) {
+    final path = movie['path'] ?? '';
+    final favorite = _favorites.contains(path);
+    return Material(
+      color: const Color(0xFF17181D),
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _opening ? null : () => _open(path, movie['name'] ?? 'Video'),
+        child: Stack(children: [
+          Positioned.fill(child: Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [_accent.withValues(alpha: .48), const Color(0xFF20232B), Colors.black])), child: Icon(Icons.movie_rounded, size: 38, color: Colors.white.withValues(alpha: .78)))),
+          Positioned(left: 10, right: 10, bottom: 8, child: Text(movie['name'] ?? 'Video', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12))),
+          Positioned(top: 4, right: 4, child: IconButton(onPressed: () => _toggleFavorite(path), icon: Icon(favorite ? Icons.star_rounded : Icons.star_border_rounded, color: favorite ? _accent : Colors.white70, size: 19))),
+        ]),
+      ),
+    );
   }
 
   Widget _miniPlayer() => Material(
