@@ -274,6 +274,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _exportEstimateMessage;
   bool _cancelExportRequested = false;
   bool _showOriginalComparison = false;
+  bool _watermarkFreeUnlocked = false;
   StudioProcessingMode _processingMode = StudioProcessingMode.conventional;
   bool _neuralReady = false;
   String _neuralStatus = 'Checking neural runtime…';
@@ -634,6 +635,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _saveEnhancedVideo() async {
     final file = _enhancedVideo;
     if (file == null || _busy || _exporting) return;
+    if (!_isPhotoOutput(file) && !await _unlockWatermarkFreeExport()) return;
     setState(() { _busy = true; _message = null; });
     try {
       final saved = await _mediaChannel.invokeMethod<String>('saveVideoToGallery', {
@@ -657,6 +659,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _shareEnhancedVideo() async {
     final file = _enhancedVideo;
     if (file == null || _busy) return;
+    if (!_isPhotoOutput(file) && !await _unlockWatermarkFreeExport()) return;
     setState(() { _busy = true; _message = null; });
     try {
       await Share.shareXFiles([file], subject: 'Processed video · Status HD', text: 'Video processed with picture adjustments in Status HD');
@@ -1331,6 +1334,20 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ],
     );
+  }
+
+  bool _isPhotoOutput(XFile file) => file.path.toLowerCase().endsWith('.jpg') || file.path.toLowerCase().endsWith('.jpeg') || file.path.toLowerCase().endsWith('.png');
+
+  Future<bool> _unlockWatermarkFreeExport() async {
+    if (_watermarkFreeUnlocked) return true;
+    if (mounted) setState(() => _message = 'Watch a short rewarded ad to export this video without a watermark.');
+    final unlocked = await _rewardedAds.showFor1080p();
+    if (unlocked) {
+      if (mounted) setState(() => _watermarkFreeUnlocked = true);
+      return true;
+    }
+    if (mounted) setState(() => _message = 'Watermark-free export was not unlocked. Try again when the ad is available.');
+    return false;
   }
 
   Future<void> _enhancePhoto(XFile file) async {
