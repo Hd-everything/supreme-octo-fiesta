@@ -93,7 +93,6 @@ jobs:
                       if (task instanceof JavaCompile) {
                           task.sourceCompatibility = '17'
                           task.targetCompatibility = '17'
-                          task.options.release.set(17)
                       }
                       if (task.class.name.contains('KotlinCompile')) {
                           try { task.kotlinOptions.jvmTarget = '17' } catch (Exception ignored) {}
