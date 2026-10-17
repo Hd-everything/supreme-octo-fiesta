@@ -30,11 +30,4 @@ jobs:
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
       - name: Tests
         run: flutter test
-      - name: Android debug APK
-        run: flutter build apk --debug
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: statushd-debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
-          retention-days: 14
+
