@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+import 'super_resolution_model.dart';
+
 /// Typed contract shared by StatusHD Studio and Movie Player. UI code never
 /// builds native filter arguments directly.
 class VideoMetadata {
@@ -115,8 +117,18 @@ class ProcessingValidationException implements Exception {
 }
 
 class VideoProcessingService {
-  VideoProcessingService({MethodChannel? channel}) : _channel = channel ?? const MethodChannel('com.ptip.statushd/media');
+  VideoProcessingService({MethodChannel? channel, SuperResolutionModelManager? superResolution})
+      : _channel = channel ?? const MethodChannel('com.ptip.statushd/media'),
+        _superResolution = superResolution ?? SuperResolutionModelManager();
   final MethodChannel _channel;
+  final SuperResolutionModelManager _superResolution;
+
+  /// Checks the packaged model and runs one real representative inference.
+  /// The result is intentionally separate from conventional video processing;
+  /// callers must not label a resize as neural restoration.
+  Future<SuperResolutionCapability> neuralCapability() => _superResolution.capability();
+
+  Future<void> closeNeuralRuntime() => _superResolution.close();
 
   Future<VideoMetadata> inspect(String path) async {
     final result = await _channel.invokeMapMethod<String, dynamic>('inspectVideo', {'inputPath': path});

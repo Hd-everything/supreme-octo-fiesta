@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:statushd/services/media_processing/video_processing_service.dart';
+import 'package:statushd/services/media_processing/super_resolution_model.dart';
 
 void main() {
   const landscape = VideoMetadata(
@@ -38,5 +39,13 @@ void main() {
     expect(metadata.isValid, isTrue);
     expect(metadata.duration, const Duration(seconds: 8));
     expect(metadata.longEdge, 1280);
+  });
+
+  test('packaged neural model contract is a real 3x tensor model', () {
+    final model = SuperResolutionModelManifest.packaged;
+    expect(model.scale, 3);
+    expect(model.inputShape, [1, 3, 64, 64]);
+    expect(model.outputShape, [1, 3, 192, 192]);
+    expect(model.license, contains('Apache-2.0'));
   });
 }

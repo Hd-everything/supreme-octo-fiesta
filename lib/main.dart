@@ -402,8 +402,8 @@ class _HomeScreenState extends State<HomeScreen> {
           _sourceResolution = '$width×$height';
           final shortEdge = width < height ? width : height;
           _qualityRecommendation = shortEdge < 720
-              ? 'Low-resolution video detected. Choose a larger output, then Status HD enhances brightness, contrast, colour and sharpness before encoding a smoother-to-view copy.'
-              : 'Choose the output quality that suits your screen. Status HD adjusts the picture and re-encodes a new copy while leaving your original untouched.';
+              ? 'Low-resolution video detected. Status HD can apply conventional enhancement and upscale it, but larger dimensions do not recreate missing detail.'
+              : 'Choose an output size for conventional enhancement. The new copy adjusts picture tone and sharpness while leaving your original untouched.';
           // Auto selects at least 1080p; explicit choices include 480p through 1440p.
           _targetLongEdge = -1;
           _exportEstimateMessage = _estimateExportSize();
@@ -934,7 +934,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: FilledButton.icon(
             onPressed: _exporting || _busy ? null : _enhanceVideo,
             icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome_rounded),
-            label: Text(_exporting ? 'Improving video quality…' : 'Process video · ${_targetLongEdge == -1 ? 'Auto / 1080p minimum' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 2560 ? '1440p' : '1080p'}'),
+            label: Text(_exporting ? 'Processing video…' : 'Process video · ${_targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 2560 ? '1440p' : '1080p'}'),
           ),
         ),
         if (_exportEstimateMessage != null) ...[
@@ -1251,7 +1251,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const Text('HOW IT WORKS', style: TextStyle(fontSize: 11, letterSpacing: 1.8, fontWeight: FontWeight.w800, color: Colors.white54)),
               const SizedBox(height: 12),
               _stepRow('01', 'Choose a video', 'Status HD detects the source dimensions and format.', accent),
-              _stepRow('02', 'Process a new copy', 'Choose the output resolution; Status HD rescales and re-encodes the video on this device.', accent),
+              _stepRow('02', 'Process a new copy', 'Choose an output size; Status HD applies conventional picture enhancement and re-encodes the video on this device.', accent),
               _stepRow('03', 'Review the result', 'Watch the encoded preview here, then save or share the processed copy.', accent),
               const SizedBox(height: 14),
               const Text('Note: WhatsApp can still resize or recompress media after you share it.', style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.5)),

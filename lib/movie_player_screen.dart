@@ -11,8 +11,9 @@ import 'media_manager_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
 
 /// A focused, cinema-style local movie player using libmpv/media_kit.
-/// Video enhancement uses the app's native Media3 encoder; it does not upload
-/// private videos to an unspecified third-party service.
+/// Video enhancement uses the app's native Media3 encoder for conventional
+/// frame filters. Neural super-resolution is a separate, capability-gated
+/// model path and is never implied by a larger output size.
 class MoviePlayerScreen extends StatefulWidget {
   const MoviePlayerScreen({super.key, this.initialPath, this.initialName});
   final String? initialPath;

@@ -18,6 +18,8 @@ dependencies:
   share_plus: ^10.1.4
   shared_preferences: ^2.3.3
   video_player: ^2.9.2
+  crypto: ^3.0.7
+  tflite_flutter: ^0.12.1
 
 dev_dependencies:
   flutter_test:
@@ -34,3 +36,7 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/models/espcn_x3.tflite
+    - assets/models/espcn_quant_x3.tflite
+    - assets/models/model_manifest.json
