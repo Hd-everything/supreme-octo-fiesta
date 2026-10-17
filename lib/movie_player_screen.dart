@@ -28,7 +28,6 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   static const _channel = MethodChannel('com.ptip.statushd/media');
   final ProcessingJobQueue _jobs = ProcessingJobQueue();
   late final VideoProcessingService _processing = VideoProcessingService(jobs: _jobs);
-  static const _extensions = <String>['mp4','mkv','avi','mov','webm','flv','wmv','m4v','3gp','ts','mpeg','mpg','ogv','vob','asf','m2ts','mts','mxf'];
   late final Player _player;
   late final VideoController _video;
   final TextEditingController _search = TextEditingController();
