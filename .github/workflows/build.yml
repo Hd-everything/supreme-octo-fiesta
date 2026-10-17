@@ -80,31 +80,35 @@ jobs:
           manifest.write_text(source)
           PY
 
-          # Apply the same JVM target to Java and Kotlin tasks in every generated
-          # project and dependency (including tflite_flutter). This is loaded by
-          # Gradle before project evaluation, so it also covers plugin subprojects.
+          # Configure JVM targets without importing Kotlin plugin classes into
+          # the init-script classloader (those classes are not available this early).
           mkdir -p "$HOME/.gradle"
           cat > "$HOME/.gradle/init.gradle" <<'EOF'
           import org.gradle.api.JavaVersion
           import org.gradle.api.tasks.compile.JavaCompile
-          import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
-          // Apply matching Java/Kotlin bytecode targets across the app and plugins.
           gradle.projectsEvaluated {
               allprojects { project ->
                   project.tasks.withType(JavaCompile).configureEach {
                       sourceCompatibility = JavaVersion.VERSION_17.toString()
                       targetCompatibility = JavaVersion.VERSION_17.toString()
                   }
-                  project.tasks.withType(KotlinCompile).configureEach {
-                      kotlinOptions.jvmTarget = JavaVersion.VERSION_17.toString()
+
+                  // Resolve Kotlin tasks by name and configure them dynamically.
+                  // Avoid a compile-time KotlinCompile import in this init script.
+                  project.tasks.configureEach { task ->
+                      if (task.name.startsWith("compile") &&
+                          task.name.endsWith("Kotlin") &&
+                          task.hasProperty("kotlinOptions")) {
+                          task.kotlinOptions.jvmTarget = JavaVersion.VERSION_17.toString()
+                      }
                   }
               }
           }
           EOF
 
-          # Keep Gradle's validation from failing before the plugin task receives
-          # the target above; the task configuration remains authoritative.
+          # Keep Gradle's validation from failing before the Kotlin task receives
+          # the target above; task configuration remains authoritative.
           printf '\nkotlin.jvm.target.validation.mode=warning\n' >> /tmp/statushd/gradle.properties
       - name: Set Android compile SDK for current plugins
         run: |
