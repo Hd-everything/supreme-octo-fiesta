@@ -32,6 +32,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   final TextEditingController _search = TextEditingController();
   List<Map<String,String>> _videos = [];
   List<Map<String,String>> _recent = [];
+  Set<String> _favorites = <String>{};
   String? _path;
   String? _name;
   String? _error;
@@ -56,6 +57,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     _video = VideoController(_player);
     _resumeTimer = Timer.periodic(const Duration(seconds: 5), (_) => _persistResume());
     _loadRecent();
+    _loadFavorites();
     _scan();
     if (widget.initialPath != null && widget.initialPath!.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _open(widget.initialPath!, widget.initialName ?? File(widget.initialPath!).uri.pathSegments.last));
@@ -98,6 +100,19 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setStringList('movie_recent_v2', next.map((v) => Uri.encodeComponent('${v['path']}|${v['name']}|${v['resume'] ?? 0}')).toList());
     } catch (_) {}
+  }
+
+  Future<void> _loadFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _favorites = (prefs.getStringList('movie_favorites_v1') ?? const <String>[]).toSet());
+  }
+
+  Future<void> _toggleFavorite(String path) async {
+    final next = {..._favorites};
+    if (!next.add(path)) next.remove(path);
+    if (mounted) setState(() => _favorites = next);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('movie_favorites_v1', next.toList());
   }
 
   Future<void> _persistResume() async {
@@ -266,6 +281,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
                 const SizedBox(height:5),
                 Text(recent && resume > 0 ? 'Resume at ${_time(Duration(milliseconds: resume))}' : '${_formatBytes(size)} · On this device',style:const TextStyle(color:Colors.white54,fontSize:11)),
               ])),
+              IconButton(tooltip: _favorites.contains(movie['path']) ? 'Remove favorite' : 'Add favorite', onPressed: () => _toggleFavorite(movie['path']!), icon: Icon(_favorites.contains(movie['path']) ? Icons.star_rounded : Icons.star_border_rounded, color: _favorites.contains(movie['path']) ? _accent : Colors.white54)),
               const Icon(Icons.play_circle_fill_rounded,size:30),
             ]),
           ),
@@ -280,7 +296,10 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   Widget _library() {
     final q = _search.text.trim().toLowerCase();
-    final filtered = _videos.where((v)=>(v['name']??'').toLowerCase().contains(q)).toList()
+    final filtered = _videos.where((v) {
+      final path = v['path'] ?? '';
+      return (_sortBy != 'Favorites' || _favorites.contains(path)) && (v['name']??'').toLowerCase().contains(q);
+    }).toList()
       ..sort((a, b) => _sortBy == 'Name' ? (a['name'] ?? '').compareTo(b['name'] ?? '') : 0);
     return Stack(children:[RefreshIndicator(
       onRefresh: _scan,
@@ -293,7 +312,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
             SizedBox(height:4),
             Text('Your cinema,\non your device.',style:TextStyle(fontSize:25,height:1.02,fontWeight:FontWeight.w900,letterSpacing:-.8)),
           ])),
-          PopupMenuButton<String>(onSelected:(value)=>setState(()=>_sortBy=value),itemBuilder:(_)=>const [PopupMenuItem(value:'Recent',child:Text('Sort: device order')),PopupMenuItem(value:'Name',child:Text('Sort: name'))],icon:const Icon(Icons.sort_rounded)),
+          PopupMenuButton<String>(onSelected:(value)=>setState(()=>_sortBy=value),itemBuilder:(_)=>const [PopupMenuItem(value:'Recent',child:Text('Sort: device order')),PopupMenuItem(value:'Name',child:Text('Sort: name')),PopupMenuItem(value:'Favorites',child:Text('Show favorites'))],icon:const Icon(Icons.sort_rounded)),
         ]),
         const SizedBox(height:17),
         TextField(controller:_search,onChanged:(_)=>setState((){}),decoration:InputDecoration(hintText:'Search videos',prefixIcon:const Icon(Icons.search_rounded),filled:true,fillColor:const Color(0xFF17181D),border:OutlineInputBorder(borderRadius:BorderRadius.circular(16),borderSide:BorderSide.none))),
