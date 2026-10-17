@@ -27,6 +27,8 @@ const _accentChoices = <Color>[
 
 const _recentExportsKey = 'recent_status_exports_v1';
 
+enum StudioProcessingMode { conventional, neural }
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
@@ -265,6 +267,9 @@ class _HomeScreenState extends State<HomeScreen> {
   int _targetLongEdge = -1;
   String? _exportEstimateMessage;
   bool _cancelExportRequested = false;
+  StudioProcessingMode _processingMode = StudioProcessingMode.conventional;
+  bool _neuralReady = false;
+  String _neuralStatus = 'Checking neural runtime…';
   double _enhanceProgress = 0;
   double _brightnessBoost = 0.09;
   double _contrastBoost = 0.18;
@@ -283,7 +288,21 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     unawaited(_jobs.load());
+    unawaited(_loadNeuralCapability());
     _loadRecentExports();
+  }
+
+  Future<void> _loadNeuralCapability() async {
+    try {
+      final result = await _processing.nativeNeuralCapability();
+      if (!mounted) return;
+      setState(() {
+        _neuralReady = result['ready'] == true && result['videoPipeline'] == true;
+        _neuralStatus = result['ready'] == true ? 'Model benchmark passed; decoded-frame export bridge is not enabled yet' : 'Neural video export unavailable on this runtime';
+      });
+    } catch (_) {
+      if (mounted) setState(() => _neuralStatus = 'Neural video export unavailable on this runtime');
+    }
   }
 
   Future<void> _loadRecentExports() async {
@@ -667,6 +686,10 @@ class _HomeScreenState extends State<HomeScreen> {
         outputWidth = 1920;
         outputHeight = 1080;
         break;
+      case '4:3':
+        outputWidth = 1440;
+        outputHeight = 1080;
+        break;
       default:
         final longEdge = sourceWidth > sourceHeight ? sourceWidth : sourceHeight;
         final shortEdge = sourceWidth < sourceHeight ? sourceWidth : sourceHeight;
@@ -883,6 +906,20 @@ class _HomeScreenState extends State<HomeScreen> {
           ])),
         ]),
         const SizedBox(height: 14),
+        const Text('PROCESSING MODE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
+        const SizedBox(height: 8),
+        SegmentedButton<StudioProcessingMode>(
+          segments: [
+            const ButtonSegment(value: StudioProcessingMode.conventional, label: Text('Conventional'), icon: Icon(Icons.tune_rounded)),
+            ButtonSegment(value: StudioProcessingMode.neural, label: const Text('Neural'), icon: const Icon(Icons.auto_awesome_rounded), enabled: _neuralReady),
+          ],
+          selected: {_processingMode},
+          onSelectionChanged: _exporting ? null : (values) => setState(() { _processingMode = values.first; _enhancedVideo = null; }),
+          showSelectedIcon: false,
+        ),
+        const SizedBox(height: 5),
+        Text(_processingMode == StudioProcessingMode.neural ? 'Neural mode processes decoded frames with the validated model.' : _neuralStatus, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        const SizedBox(height: 14),
         const Text('OUTPUT SIZE (ENCODED)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
         const SizedBox(height: 8),
         SegmentedButton<int>(
@@ -1024,9 +1061,10 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 10),
         SegmentedButton<String>(
           segments: const [
-            ButtonSegment(value: '9:16', label: Text('9:16')),
+            ButtonSegment(value: '9:16', label: Text('Status 9:16')),
             ButtonSegment(value: '1:1', label: Text('1:1')),
             ButtonSegment(value: '16:9', label: Text('16:9')),
+            ButtonSegment(value: '4:3', label: Text('4:3')),
             ButtonSegment(value: 'Original', label: Text('Original')),
           ],
           selected: {_cropRatio},
