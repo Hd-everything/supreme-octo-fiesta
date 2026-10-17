@@ -10,8 +10,8 @@ import 'movie_player_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
 import 'services/media_processing/processing_job_queue.dart';
 import 'services/media_processing/photo_processing_service.dart';
-import 'widgets/ad_banner.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'services/ads/rewarded_ad_service.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -256,6 +256,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final ProcessingJobQueue _jobs = ProcessingJobQueue();
   late final VideoProcessingService _processing = VideoProcessingService(jobs: _jobs);
   final PhotoProcessingService _photos = PhotoProcessingService();
+  final RewardedAdService _rewardedAds = RewardedAdService();
   XFile? _selected;
   bool _busy = false;
   String? _message;
@@ -294,6 +295,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     unawaited(_jobs.load());
+    _rewardedAds.preload();
     unawaited(_loadNeuralCapability());
     _loadRecentExports();
   }
@@ -488,6 +490,14 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     final presetLabel = _targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 2560 ? '1440p' : '1080p';
+    if (targetLongEdge == 1920) {
+      setState(() => _message = 'Watch a short rewarded ad to unlock 1080p processing.');
+      final rewarded = await _rewardedAds.showFor1080p();
+      if (!rewarded) {
+        if (mounted) setState(() => _message = '1080p unlock was not completed. Choose another output size or try again.');
+        return;
+      }
+    }
     setState(() {
       _exporting = true;
       _cancelExportRequested = false;
@@ -1260,7 +1270,6 @@ class _HomeScreenState extends State<HomeScreen> {
               Text('Status HD starts with a\nclip from your phone.', style: TextStyle(fontSize: widget.compact ? 30 : 36, height: 1.06, fontWeight: FontWeight.w800, letterSpacing: -1.15)),
               const SizedBox(height: 12),
               const Text('Choose a photo or video, preview it, then prepare a separate copy for Status. The source stays untouched.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
-              const StatusHdAdBanner(),
               const SizedBox(height: 18),
               Wrap(
                 spacing: 8,
