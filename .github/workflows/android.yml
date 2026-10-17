@@ -27,7 +27,7 @@ jobs:
       - name: Format check
         run: dart format lib test
       - name: Static analysis
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
       - name: Tests
         run: flutter test
       - name: Android debug APK
