@@ -267,6 +267,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _targetLongEdge = -1;
   String? _exportEstimateMessage;
   bool _cancelExportRequested = false;
+  bool _showOriginalComparison = false;
   StudioProcessingMode _processingMode = StudioProcessingMode.conventional;
   bool _neuralReady = false;
   String _neuralStatus = 'Checking neural runtime…';
@@ -575,7 +576,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: AspectRatio(
               aspectRatio: controller.value.aspectRatio > 0 ? controller.value.aspectRatio : 16 / 9,
               child: Stack(alignment: Alignment.center, children: [
-                VideoPlayer(controller),
+                VideoPlayer(_showOriginalComparison && _videoController?.value.isInitialized == true ? _videoController! : controller),
                 IconButton.filled(
                   onPressed: _previewEnhancedVideo,
                   iconSize: 32,
@@ -589,7 +590,8 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 8),
           Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
-          const Text('This is the encoded file, not the original preview.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          Text(_showOriginalComparison ? 'Original source preview' : 'Encoded file preview', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+          Align(alignment: Alignment.centerRight, child: TextButton.icon(onPressed: () => setState(() => _showOriginalComparison = !_showOriginalComparison), icon: Icon(_showOriginalComparison ? Icons.compare_arrows_rounded : Icons.visibility_outlined), label: Text(_showOriginalComparison ? 'Show processed' : 'Compare original'))),
           const SizedBox(height: 10),
           Row(children: [
             Expanded(child: OutlinedButton.icon(onPressed: _busy ? null : _saveEnhancedVideo, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save to device'))),
