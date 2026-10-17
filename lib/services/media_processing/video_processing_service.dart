@@ -48,6 +48,7 @@ class EnhancementConfiguration {
     this.saturation = 14,
     this.sharpness = 0.22,
     this.noiseReduction = 0,
+    this.watermark = true,
     this.outputWidth,
     this.outputHeight,
   });
@@ -59,6 +60,7 @@ class EnhancementConfiguration {
   final double saturation;
   final double sharpness;
   final double noiseReduction;
+  final bool watermark;
   final int? outputWidth;
   final int? outputHeight;
 
@@ -192,6 +194,7 @@ class VideoProcessingService {
         'saturation': config.saturation,
         'sharpness': config.sharpness,
         'noiseReduction': config.noiseReduction,
+        'watermark': config.watermark,
       });
     }
     if (request.crop case final crop?) {

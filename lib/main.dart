@@ -526,6 +526,7 @@ class _HomeScreenState extends State<HomeScreen> {
           saturation: _saturationBoost,
           outputWidth: outputWidth,
           outputHeight: outputHeight,
+          watermark: !_watermarkFreeUnlocked,
         ),
       ));
       final processedPath = processed.path;
