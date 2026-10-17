@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'media_manager_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
 import 'services/media_processing/processing_job_queue.dart';
+import 'widgets/ad_banner.dart';
 
 /// A focused, cinema-style local movie player using libmpv/media_kit.
 /// Video enhancement uses the app's native Media3 encoder for conventional
@@ -333,6 +334,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         TextField(controller:_search,onChanged:(_)=>setState((){}),decoration:InputDecoration(hintText:'Search videos',prefixIcon:const Icon(Icons.search_rounded),filled:true,fillColor:const Color(0xFF17181D),border:OutlineInputBorder(borderRadius:BorderRadius.circular(16),borderSide:BorderSide.none))),
         const SizedBox(height: 10),
         SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [for (final tab in const ['All', 'Recent', 'Favorites', 'Processed', 'Downloads']) Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(label: Text(tab), selected: _libraryTab == tab, onSelected: (_) => setState(() => _libraryTab = tab))) ])),
+        const StatusHdAdBanner(),
         const SizedBox(height:12),
         SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:_opening?null:_browse,icon:const Icon(Icons.video_library_rounded),label:const Text('Open media manager'))),
         if(_recent.isNotEmpty) ...[

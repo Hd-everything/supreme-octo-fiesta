@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application android:label="Status HD" android:theme="@style/AppTheme" android:usesCleartextTraffic="false">
+        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8529698532324480~6965542136" />
         <activity android:name="com.ptip.statushd.MainActivity" android:exported="true" android:screenOrientation="fullSensor">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
