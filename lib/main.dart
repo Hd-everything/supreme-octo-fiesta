@@ -332,6 +332,14 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => _recentExports = entries);
   }
 
+  @override
+  void dispose() {
+    _jobs.dispose();
+    _videoController?.dispose();
+    _enhancedPreviewController?.dispose();
+    super.dispose();
+  }
+
   Future<void> _recordExports(List<XFile> files, String kind) async {
     final now = DateTime.now().toIso8601String();
     final next = <Map<String, String>>[
@@ -381,13 +389,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ? 'WhatsApp Status preset applied: 9:16 frame, 1080p output and the first 30 seconds selected. Use Auto-cut for every clip.'
           : 'WhatsApp Status preset applied: 9:16 frame, 1080p output and a status-length clip.';
     });
-  }
-
-  @override
-  void dispose() {
-    _videoController?.dispose();
-    _enhancedPreviewController?.dispose();
-    super.dispose();
   }
 
   Future<void> _pickMedia() async {
