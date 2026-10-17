@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'media_manager_screen.dart';
 import 'movie_player_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
+import 'services/media_processing/processing_job_queue.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -246,7 +247,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final VideoProcessingService _processing = VideoProcessingService();
+  final ProcessingJobQueue _jobs = ProcessingJobQueue();
+  late final VideoProcessingService _processing = VideoProcessingService(jobs: _jobs);
   XFile? _selected;
   bool _busy = false;
   String? _message;
@@ -280,6 +282,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_jobs.load());
     _loadRecentExports();
   }
 

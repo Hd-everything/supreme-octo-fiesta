@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:statushd/services/media_processing/video_processing_service.dart';
 import 'package:statushd/services/media_processing/super_resolution_model.dart';
+import 'package:statushd/services/media_processing/processing_job_queue.dart';
 
 void main() {
   const landscape = VideoMetadata(
@@ -47,5 +48,14 @@ void main() {
     expect(model.inputShape, [1, 3, 64, 64]);
     expect(model.outputShape, [1, 3, 192, 192]);
     expect(model.license, contains('Apache-2.0'));
+  });
+
+  test('processing jobs expose honest lifecycle states', () {
+    final job = ProcessingJob(id: '1', inputPath: 'in.mp4', outputPath: 'out.mp4', operation: 'enhancement', createdAt: DateTime(2025));
+    expect(job.terminal, isFalse);
+    job.state = ProcessingJobState.verifying;
+    expect(job.terminal, isFalse);
+    job.state = ProcessingJobState.complete;
+    expect(job.terminal, isTrue);
   });
 }

@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'media_manager_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
+import 'services/media_processing/processing_job_queue.dart';
 
 /// A focused, cinema-style local movie player using libmpv/media_kit.
 /// Video enhancement uses the app's native Media3 encoder for conventional
@@ -25,7 +26,8 @@ class MoviePlayerScreen extends StatefulWidget {
 
 class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   static const _channel = MethodChannel('com.ptip.statushd/media');
-  final VideoProcessingService _processing = VideoProcessingService();
+  final ProcessingJobQueue _jobs = ProcessingJobQueue();
+  late final VideoProcessingService _processing = VideoProcessingService(jobs: _jobs);
   static const _extensions = <String>['mp4','mkv','avi','mov','webm','flv','wmv','m4v','3gp','ts','mpeg','mpg','ogv','vob','asf','m2ts','mts','mxf'];
   late final Player _player;
   late final VideoController _video;
@@ -53,6 +55,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_jobs.load());
     _player = Player();
     _video = VideoController(_player);
     _resumeTimer = Timer.periodic(const Duration(seconds: 5), (_) => _persistResume());
@@ -66,6 +69,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   @override
   void dispose() {
+    _jobs.dispose();
     _hideTimer?.cancel();
     _resumeTimer?.cancel();
     _sleepTimer?.cancel();

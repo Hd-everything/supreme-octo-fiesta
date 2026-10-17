@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import 'super_resolution_model.dart';
+import 'processing_job_queue.dart';
 
 /// Typed contract shared by StatusHD Studio and Movie Player. UI code never
 /// builds native filter arguments directly.
@@ -117,11 +118,13 @@ class ProcessingValidationException implements Exception {
 }
 
 class VideoProcessingService {
-  VideoProcessingService({MethodChannel? channel, SuperResolutionModelManager? superResolution})
+  VideoProcessingService({MethodChannel? channel, SuperResolutionModelManager? superResolution, ProcessingJobQueue? jobs})
       : _channel = channel ?? const MethodChannel('com.ptip.statushd/media'),
-        _superResolution = superResolution ?? SuperResolutionModelManager();
+        _superResolution = superResolution ?? SuperResolutionModelManager(),
+        _jobs = jobs;
   final MethodChannel _channel;
   final SuperResolutionModelManager _superResolution;
+  final ProcessingJobQueue? _jobs;
 
   /// Checks the packaged model and runs one real representative inference.
   /// The result is intentionally separate from conventional video processing;
@@ -168,6 +171,10 @@ class VideoProcessingService {
 
   Future<ProcessingResult> process(ProcessingRequest request) async {
     validate(request);
+    final jobId = 'job_${DateTime.now().microsecondsSinceEpoch}';
+    final job = ProcessingJob(id: jobId, inputPath: request.inputPath, outputPath: request.outputPath, operation: request.isEnhancement ? 'enhancement' : 'crop', createdAt: DateTime.now());
+    await _jobs?.add(job);
+    await _jobs?.update(jobId, state: ProcessingJobState.preparing, message: 'Preparing source metadata');
     final payload = <String, Object>{
       'inputPath': request.inputPath,
       'outputPath': request.outputPath,
@@ -190,13 +197,21 @@ class VideoProcessingService {
     if (request.crop case final crop?) {
       payload.addAll({'cropX': crop.x, 'cropY': crop.y, 'cropWidth': crop.width, 'cropHeight': crop.height, 'cropAspectRatio': crop.aspectRatio ?? 0});
     }
-    final result = await _channel.invokeMapMethod<String, dynamic>('processVideo', payload);
-    final path = result?['path']?.toString();
-    if (path == null || !File(path).isFile || await File(path).length() == 0) {
-      throw const ProcessingValidationException('Processing did not create a readable output file.');
+    try {
+      await _jobs?.update(jobId, state: ProcessingJobState.decoding, message: 'Decoding frames');
+      await _jobs?.update(jobId, state: ProcessingJobState.enhancing, message: request.isEnhancement ? 'Applying enhancement' : 'Applying crop');
+      final result = await _channel.invokeMapMethod<String, dynamic>('processVideo', payload);
+      await _jobs?.update(jobId, state: ProcessingJobState.encoding, message: 'Encoding output');
+      final path = result?['path']?.toString();
+      if (path == null || !File(path).isFile || await File(path).length() == 0) throw const ProcessingValidationException('Processing did not create a readable output file.');
+      await _jobs?.update(jobId, state: ProcessingJobState.verifying, message: 'Verifying output');
+      final metadata = await inspect(path);
+      await _jobs?.update(jobId, state: ProcessingJobState.complete, progress: 1, message: 'Complete');
+      return ProcessingResult(path: path, metadata: metadata);
+    } catch (error) {
+      await _jobs?.update(jobId, state: ProcessingJobState.failed, message: 'Processing failed', error: error.toString());
+      rethrow;
     }
-    final metadata = await inspect(path);
-    return ProcessingResult(path: path, metadata: metadata);
   }
 
   Future<void> cancel() => _channel.invokeMethod<void>('cancelProcessing');
