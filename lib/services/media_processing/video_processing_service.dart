@@ -160,7 +160,7 @@ class VideoProcessingService {
   void validate(ProcessingRequest request) {
     if (!request.metadata.isValid) throw const ProcessingValidationException('The source dimensions are not supported.');
     if (request.metadata.duration.inMilliseconds <= 0) throw const ProcessingValidationException('The source duration could not be read.');
-    if (!File(request.inputPath).isFileSync()) throw const ProcessingValidationException('The source video is no longer available.');
+    if (!File(request.inputPath).existsSync()) throw const ProcessingValidationException('The source video is no longer available.');
     if (request.enhancement case final config?) {
       if (config.brightness < -.25 || config.brightness > .25 || config.contrast < -.3 || config.contrast > .3 || config.saturation < -20 || config.saturation > 30 || config.sharpness < 0 || config.sharpness > .5) {
         throw const ProcessingValidationException('One or more picture adjustments are outside the supported range.');
@@ -206,7 +206,7 @@ class VideoProcessingService {
       final result = await _channel.invokeMapMethod<String, dynamic>('processVideo', payload);
       await _jobs?.update(jobId, state: ProcessingJobState.encoding, message: 'Encoding output');
       final path = result?['path']?.toString();
-      if (path == null || !File(path).isFile || await File(path).length() == 0) throw const ProcessingValidationException('Processing did not create a readable output file.');
+      if (path == null || !File(path).existsSync() || await File(path).length() == 0) throw const ProcessingValidationException('Processing did not create a readable output file.');
       await _jobs?.update(jobId, state: ProcessingJobState.verifying, message: 'Verifying output');
       final metadata = await inspect(path);
       await _jobs?.update(jobId, state: ProcessingJobState.complete, progress: 1, message: 'Complete');

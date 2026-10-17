@@ -12,7 +12,6 @@ import 'services/media_processing/processing_job_queue.dart';
 import 'services/media_processing/photo_processing_service.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'services/ads/rewarded_ad_service.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
