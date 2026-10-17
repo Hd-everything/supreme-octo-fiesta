@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'media_manager_screen.dart';
+import 'services/media_processing/video_processing_service.dart';
 
 /// A focused, cinema-style local movie player using libmpv/media_kit.
 /// Video enhancement uses the app's native Media3 encoder; it does not upload
@@ -23,6 +24,7 @@ class MoviePlayerScreen extends StatefulWidget {
 
 class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   static const _channel = MethodChannel('com.ptip.statushd/media');
+  final VideoProcessingService _processing = VideoProcessingService();
   static const _extensions = <String>['mp4','mkv','avi','mov','webm','flv','wmv','m4v','3gp','ts','mpeg','mpg','ogv','vob','asf','m2ts','mts','mxf'];
   late final Player _player;
   late final VideoController _video;
@@ -206,18 +208,27 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     setState(() { _enhancing = true; _status = 'Preparing a clearer ${_target}p copy…'; _error = null; });
     try {
       await _player.pause();
-      final result = await _channel.invokeMethod<String>('enhanceVideo', {
-        'inputPath': source, 'outputPath': output, 'outputWidth': outW, 'outputHeight': outH,
-        'brightness': 0.08, 'contrast': 0.16, 'saturation': 14.0,
-      });
-      if (result == null || !await File(result).exists() || await File(result).length() == 0) throw StateError('No output video was created.');
+      final metadata = await _processing.inspect(source);
+      final result = await _processing.process(ProcessingRequest.enhance(
+        inputPath: source,
+        outputPath: output,
+        metadata: metadata,
+        enhancement: EnhancementConfiguration(
+          resolution: _target >= 2560 ? OutputResolution.p1440 : _target >= 1920 ? OutputResolution.p1080 : OutputResolution.p720,
+          brightness: .08,
+          contrast: .16,
+          saturation: 14,
+          outputWidth: outW,
+          outputHeight: outH,
+        ),
+      ));
       try {
-        await _channel.invokeMethod('saveVideoToGallery', {'inputPath':result,'displayName':'Movie_${_target}p_${DateTime.now().millisecondsSinceEpoch}.mp4'});
+        await _channel.invokeMethod('saveVideoToGallery', {'inputPath':result.path,'displayName':'Movie_${_target}p_${DateTime.now().millisecondsSinceEpoch}.mp4'});
       } catch (_) {}
       if (!mounted) return;
-      setState(() { _path = result; _name = 'Enhanced copy · ${_target}p'; _width = outW; _height = outH; _status = 'Playing your new ${_target}p copy'; });
-      await _player.open(Media(result), play: true);
-      await _saveRecent(result, _name!);
+      setState(() { _path = result.path; _name = 'Enhanced copy · ${_target}p'; _width = result.metadata.width; _height = result.metadata.height; _status = 'Playing your new ${_target}p copy'; });
+      await _player.open(Media(result.path), play: true);
+      await _saveRecent(result.path, _name!);
       _armControls();
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not improve this video: ${e.toString().replaceFirst('Exception: ','')}');

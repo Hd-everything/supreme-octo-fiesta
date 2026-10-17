@@ -11,6 +11,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
+import androidx.media3.effect.Crop
 import androidx.media3.transformer.Effects
 import androidx.media3.effect.HslAdjustment
 import androidx.media3.effect.LanczosResample
@@ -57,10 +58,112 @@ class MainActivity : FlutterActivity() {
     private var pendingMediaLibraryResult: MethodChannel.Result? = null
     private val videoLibraryRequestCode = 7001
     private val mediaLibraryRequestCode = 7002
+    private var activeTransformer: Transformer? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+            if (call.method == "inspectVideo") {
+                val path = call.argument<String>("inputPath")
+                if (path.isNullOrBlank() || !File(path).isFile) {
+                    result.error("invalid_video", "Choose a readable video file.", null)
+                    return@setMethodCallHandler
+                }
+                try {
+                    result.success(inspectVideo(path))
+                } catch (error: Exception) {
+                    result.error("metadata_failed", error.message ?: "Could not inspect this video.", null)
+                }
+                return@setMethodCallHandler
+            }
+            if (call.method == "cancelProcessing") {
+                val transformer = activeTransformer
+                if (transformer == null) result.success(false)
+                else {
+                    transformer.cancel()
+                    activeTransformer = null
+                    result.success(true)
+                }
+                return@setMethodCallHandler
+            }
+            if (call.method == "processVideo") {
+                val inputPath = call.argument<String>("inputPath")
+                val outputPath = call.argument<String>("outputPath")
+                val operation = call.argument<String>("operation")
+                if (inputPath.isNullOrBlank() || outputPath.isNullOrBlank() || !File(inputPath).isFile || (operation != "enhance" && operation != "crop")) {
+                    result.error("invalid_arguments", "Choose a valid source and output configuration.", null)
+                    return@setMethodCallHandler
+                }
+                if (activeTransformer != null) {
+                    result.error("processing_busy", "Another video is already processing.", null)
+                    return@setMethodCallHandler
+                }
+                val source = try { inspectVideo(inputPath) } catch (error: Exception) {
+                    result.error("metadata_failed", error.message ?: "Could not inspect this video.", null)
+                    return@setMethodCallHandler
+                }
+                val outputWidth: Int
+                val outputHeight: Int
+                val effects = mutableListOf<androidx.media3.common.Effect>()
+                if (operation == "enhance") {
+                    outputWidth = call.argument<Number>("outputWidth")?.toInt() ?: 0
+                    outputHeight = call.argument<Number>("outputHeight")?.toInt() ?: 0
+                    val brightness = (call.argument<Number>("brightness")?.toFloat() ?: 0f).coerceIn(-0.25f, 0.25f)
+                    val contrast = (call.argument<Number>("contrast")?.toFloat() ?: 0f).coerceIn(-0.3f, 0.3f)
+                    val saturation = (call.argument<Number>("saturation")?.toFloat() ?: 0f).coerceIn(-20f, 30f)
+                    val sharpness = (call.argument<Number>("sharpness")?.toFloat() ?: 0.22f).coerceIn(0f, 0.5f)
+                    if (outputWidth < 2 || outputHeight < 2 || outputWidth > 4096 || outputHeight > 4096) {
+                        result.error("unsupported_output", "This output size is not supported on this device.", null)
+                        return@setMethodCallHandler
+                    }
+                    effects.addAll(listOf(Brightness(brightness), Contrast(contrast), HslAdjustment.Builder().adjustSaturation(saturation).build(), DetailSharpenEffect(sharpness), LanczosResample.scaleToFit(outputWidth, outputHeight), Presentation.createForWidthAndHeight(outputWidth, outputHeight, Presentation.LAYOUT_SCALE_TO_FIT)))
+                } else {
+                    val ratio = call.argument<Number>("cropAspectRatio")?.toDouble() ?: 0.0
+                    val sourceWidth = source["width"] as Int
+                    val sourceHeight = source["height"] as Int
+                    val sourceRatio = sourceWidth.toDouble() / sourceHeight.toDouble()
+                    val targetRatio = if (ratio > 0.0) ratio else sourceRatio
+                    if (targetRatio <= 0.0) {
+                        result.error("invalid_crop", "Choose a valid crop ratio.", null)
+                        return@setMethodCallHandler
+                    }
+                    if (sourceRatio >= targetRatio) {
+                        outputHeight = source["height"] as Int
+                        outputWidth = (outputHeight * targetRatio).toInt().coerceAtLeast(2)
+                    } else {
+                        outputWidth = source["width"] as Int
+                        outputHeight = (outputWidth / targetRatio).toInt().coerceAtLeast(2)
+                    }
+                    val cropX = (call.argument<Number>("cropX")?.toFloat() ?: 0f).coerceIn(0f, 1f)
+                    val cropY = (call.argument<Number>("cropY")?.toFloat() ?: 0f).coerceIn(0f, 1f)
+                    val cropWidth = (call.argument<Number>("cropWidth")?.toFloat() ?: 1f).coerceIn(0.01f, 1f - cropX)
+                    val cropHeight = (call.argument<Number>("cropHeight")?.toFloat() ?: 1f).coerceIn(0.01f, 1f - cropY)
+                    // Media3 Crop uses normalized device coordinates. This crops encoded
+                    // frames before scaling and leaves the audio stream synchronized.
+                    effects.add(Crop(cropX * 2f - 1f, (cropX + cropWidth) * 2f - 1f, 1f - (cropY + cropHeight) * 2f, 1f - cropY * 2f))
+                    effects.add(Presentation.createForWidthAndHeight(outputWidth, outputHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+                }
+                val outputFile = File(outputPath)
+                outputFile.parentFile?.mkdirs()
+                outputFile.delete()
+                val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(File(inputPath)))).setEffects(Effects(emptyList(), effects)).build()
+                val transformer = Transformer.Builder(this).setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: androidx.media3.transformer.Composition, exportResult: ExportResult) {
+                        activeTransformer = null
+                        if (outputFile.isFile && outputFile.length() > 0L) result.success(mapOf("path" to outputFile.absolutePath))
+                        else { outputFile.delete(); result.error("output_missing", "Processing completed without a usable output file.", null) }
+                    }
+                    override fun onError(composition: androidx.media3.transformer.Composition, exportResult: ExportResult, exportException: ExportException) {
+                        activeTransformer = null
+                        outputFile.delete()
+                        result.error("processing_failed", exportException.message ?: "This device could not process the video.", null)
+                    }
+                }).build()
+                activeTransformer = transformer
+                try { transformer.start(item, outputFile.absolutePath) }
+                catch (error: Exception) { activeTransformer = null; outputFile.delete(); result.error("processing_start_failed", error.message ?: "Could not start processing.", null) }
+                return@setMethodCallHandler
+            }
             if (call.method == "getVideoDimensions") {
                 val path = call.argument<String>("path")
                 if (path.isNullOrBlank() || !File(path).isFile) {
@@ -329,6 +432,33 @@ class MainActivity : FlutterActivity() {
             }
         }
         return videos
+    }
+
+    private fun inspectVideo(path: String): Map<String, Any> {
+        val file = File(path)
+        if (!file.isFile) throw IllegalArgumentException("The source video is no longer available.")
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(path)
+            var width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            var height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            if (rotation == 90 || rotation == 270) {
+                val swap = width
+                width = height
+                height = swap
+            }
+            if (width < 2 || height < 2) throw IllegalArgumentException("Could not read the video dimensions.")
+            return mapOf(
+                "width" to width,
+                "height" to height,
+                "durationMs" to (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L),
+                "fileSize" to file.length(),
+                "rotation" to rotation
+            )
+        } finally {
+            retriever.release()
+        }
     }
 
     private fun queryDeviceMedia(): List<Map<String, Any>> {

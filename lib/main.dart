@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'media_manager_screen.dart';
 import 'movie_player_screen.dart';
+import 'services/media_processing/video_processing_service.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -245,6 +246,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final VideoProcessingService _processing = VideoProcessingService();
   XFile? _selected;
   bool _busy = false;
   String? _message;
@@ -464,23 +466,29 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     try {
       final output = '${Directory.systemTemp.path}/statushd_enhanced_${DateTime.now().microsecondsSinceEpoch}.mp4';
-      final processedPath = await _mediaChannel.invokeMethod<String>('enhanceVideo', {
-        'inputPath': file.path,
-        'outputPath': output,
-        'outputWidth': outputWidth,
-        'outputHeight': outputHeight,
-        'brightness': _brightnessBoost,
-        'contrast': _contrastBoost,
-        'saturation': _saturationBoost,
-      });
+      final metadata = await _processing.inspect(file.path);
+      final resolution = _targetLongEdge == 2560
+          ? OutputResolution.p1440
+          : _targetLongEdge == 1280
+              ? OutputResolution.p720
+              : OutputResolution.p1080;
+      final processed = await _processing.process(ProcessingRequest.enhance(
+        inputPath: file.path,
+        outputPath: output,
+        metadata: metadata,
+        enhancement: EnhancementConfiguration(
+          resolution: resolution,
+          brightness: _brightnessBoost,
+          contrast: _contrastBoost,
+          saturation: _saturationBoost,
+          outputWidth: outputWidth,
+          outputHeight: outputHeight,
+        ),
+      ));
+      final processedPath = processed.path;
       if (_cancelExportRequested) {
-        if (processedPath != null) {
-          try { await File(processedPath).delete(); } catch (_) {}
-        }
+        try { await File(processedPath).delete(); } catch (_) {}
         throw StateError('Processing cancelled.');
-      }
-      if (processedPath == null || !await File(processedPath).exists()) {
-        throw StateError('The video processor did not produce an output file.');
       }
       final actualLength = await File(processedPath).length();
       if (actualLength == 0) throw StateError('The processed video is empty.');
@@ -671,15 +679,15 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     try {
       final output = '${Directory.systemTemp.path}/statushd_crop_${DateTime.now().microsecondsSinceEpoch}.mp4';
-      final path = await _mediaChannel.invokeMethod<String>('cropVideo', {
-        'inputPath': file.path,
-        'outputPath': output,
-        'outputWidth': outputWidth,
-        'outputHeight': outputHeight,
-      });
-      if (path == null || !await File(path).exists() || await File(path).length() == 0) {
-        throw StateError('The crop processor did not produce a valid output file.');
-      }
+      final metadata = await _processing.inspect(file.path);
+      final aspectRatio = outputWidth / outputHeight;
+      final processed = await _processing.process(ProcessingRequest.crop(
+        inputPath: file.path,
+        outputPath: output,
+        metadata: metadata,
+        crop: CropConfiguration.centeredFor(metadata, aspectRatio),
+      ));
+      final path = processed.path;
       final outputBytes = await File(path).length();
       await _enhancedPreviewController?.dispose();
       final preview = VideoPlayerController.file(File(path));
@@ -940,6 +948,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: TextButton.icon(
               onPressed: () async {
                 _cancelExportRequested = true;
+                await _processing.cancel();
                 _message = 'Cancellation is requested after the current device processing finishes.';
               },
               icon: const Icon(Icons.close_rounded, size: 16),
