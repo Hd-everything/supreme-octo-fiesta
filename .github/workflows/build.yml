@@ -174,14 +174,13 @@ jobs:
           dependencies = (
               "androidx.media3:media3-transformer",
               "androidx.media3:media3-effect",
-              "org.tensorflow:tensorflow-lite",
           )
           if not all(dep in source for dep in dependencies):
               if gradle.suffix == ".kts":
-                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n    implementation("org.tensorflow:tensorflow-lite:2.16.1")\n'
+                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n'
                   pattern = r"dependencies\s*\{"
               else:
-                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n    implementation "org.tensorflow:tensorflow-lite:2.16.1"\n'
+                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n'
                   pattern = r"dependencies\s*\{"
               match = re.search(pattern, source)
               if match:
