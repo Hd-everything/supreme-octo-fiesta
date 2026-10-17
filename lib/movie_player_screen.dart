@@ -44,6 +44,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   double _speed = 1;
   double _zoom = 1;
   String _sortBy = 'Recent';
+  String _libraryTab = 'All';
   Timer? _hideTimer;
   Timer? _resumeTimer;
   Timer? _sleepTimer;
@@ -302,7 +303,15 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     final q = _search.text.trim().toLowerCase();
     final filtered = _videos.where((v) {
       final path = v['path'] ?? '';
-      return (_sortBy != 'Favorites' || _favorites.contains(path)) && (v['name']??'').toLowerCase().contains(q);
+      final recent = _recent.any((item) => item['path'] == path);
+      final tabMatch = switch (_libraryTab) {
+        'Recent' => recent,
+        'Favorites' => _favorites.contains(path),
+        'Processed' => (v['name'] ?? '').toLowerCase().contains('processed') || (v['name'] ?? '').toLowerCase().contains('enhanced'),
+        'Downloads' => path.toLowerCase().contains('/download') || path.toLowerCase().contains('\\download'),
+        _ => true,
+      };
+      return tabMatch && (_sortBy != 'Favorites' || _favorites.contains(path)) && (v['name']??'').toLowerCase().contains(q);
     }).toList()
       ..sort((a, b) => _sortBy == 'Name' ? (a['name'] ?? '').compareTo(b['name'] ?? '') : 0);
     return Stack(children:[RefreshIndicator(
@@ -320,6 +329,8 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         ]),
         const SizedBox(height:17),
         TextField(controller:_search,onChanged:(_)=>setState((){}),decoration:InputDecoration(hintText:'Search videos',prefixIcon:const Icon(Icons.search_rounded),filled:true,fillColor:const Color(0xFF17181D),border:OutlineInputBorder(borderRadius:BorderRadius.circular(16),borderSide:BorderSide.none))),
+        const SizedBox(height: 10),
+        SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [for (final tab in const ['All', 'Recent', 'Favorites', 'Processed', 'Downloads']) Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(label: Text(tab), selected: _libraryTab == tab, onSelected: (_) => setState(() => _libraryTab = tab))) ])),
         const SizedBox(height:12),
         SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:_opening?null:_browse,icon:const Icon(Icons.video_library_rounded),label:const Text('Open media manager'))),
         if(_recent.isNotEmpty) ...[
