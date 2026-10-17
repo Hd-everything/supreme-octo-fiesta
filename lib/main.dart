@@ -9,6 +9,7 @@ import 'media_manager_screen.dart';
 import 'movie_player_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
 import 'services/media_processing/processing_job_queue.dart';
+import 'services/media_processing/photo_processing_service.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -251,6 +252,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final ProcessingJobQueue _jobs = ProcessingJobQueue();
   late final VideoProcessingService _processing = VideoProcessingService(jobs: _jobs);
+  final PhotoProcessingService _photos = PhotoProcessingService();
   XFile? _selected;
   bool _busy = false;
   String? _message;
@@ -456,6 +458,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _enhanceVideo() async {
     final file = _selected;
+    if (file != null && !_isVideo) {
+      await _enhancePhoto(file);
+      return;
+    }
     final controller = _videoController;
     if (file == null || controller == null || !controller.value.isInitialized || _exporting || _busy) return;
     final sourceWidth = controller.value.size.width.round();
@@ -556,6 +562,15 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _processedOutputPreview(Color accent) {
     final file = _enhancedVideo;
     final controller = _enhancedPreviewController;
+    if (file != null && file.path.toLowerCase().endsWith('.jpg')) {
+      return Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [Icon(Icons.verified_rounded, color: accent), const SizedBox(width: 8), const Expanded(child: Text('ENHANCED PHOTO', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.4))), const Text('JPEG', style: TextStyle(color: Colors.white54, fontSize: 11))]),
+        const SizedBox(height: 12),
+        ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.file(File(file.path), height: 240, width: double.infinity, fit: BoxFit.contain)),
+        const SizedBox(height: 10),
+        Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _busy ? null : _saveEnhancedVideo, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save copy'))), const SizedBox(width: 8), Expanded(child: FilledButton.icon(onPressed: _busy ? null : _shareEnhancedVideo, icon: const Icon(Icons.ios_share_rounded), label: const Text('Share')))]),
+      ])));
+    }
     if (file == null || controller == null || !controller.value.isInitialized) return const SizedBox.shrink();
     final width = controller.value.size.width.round();
     final height = controller.value.size.height.round();
@@ -1303,6 +1318,22 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ],
     );
+  }
+
+  Future<void> _enhancePhoto(XFile file) async {
+    if (_exporting || _busy) return;
+    setState(() { _exporting = true; _message = 'Preparing enhanced photo…'; _enhancedVideo = null; });
+    try {
+      final output = '${Directory.systemTemp.path}/statushd_photo_${DateTime.now().microsecondsSinceEpoch}.jpg';
+      final result = await _photos.process(inputPath: file.path, outputPath: output, targetLongEdge: _targetLongEdge > 0 ? _targetLongEdge : null, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost);
+      if (!mounted) return;
+      setState(() { _enhancedVideo = XFile(result.path, mimeType: 'image/jpeg'); _message = 'Enhanced photo ready: ${result.width}×${result.height} · ${_formatBytes(result.bytes)}. Save or share the new copy.'; _enhanceProgress = 1; });
+      unawaited(_recordExports([XFile(result.path, mimeType: 'image/jpeg')], 'Enhanced photo'));
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Photo enhancement failed: ${error.toString().replaceFirst('Exception: ', '')}');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
   }
 
   Widget _whatsAppStatusPreset(Color accent) => Container(
