@@ -62,6 +62,45 @@ jobs:
                   source = source.replace("<application", permission + "\n    <application", 1)
           manifest.write_text(source)
           PY
+
+      - name: Configure generated Android metadata
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          manifest = Path("/tmp/statushd/android/app/src/main/AndroidManifest.xml")
+          source = manifest.read_text()
+          metadata = '        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8529698532324480~6965542136" />'
+          if "com.google.android.gms.ads.APPLICATION_ID" not in source:
+              source = source.replace("<application", "<application\n" + metadata, 1)
+          manifest.write_text(source)
+          PY
+
+          # Apply the same JVM target to Java and Kotlin tasks in every generated
+          # project and dependency (including tflite_flutter). This is loaded by
+          # Gradle before project evaluation, so it also covers plugin subprojects.
+          mkdir -p "$HOME/.gradle"
+          cat > "$HOME/.gradle/init.gradle" <<'EOF'
+          import org.gradle.api.tasks.compile.JavaCompile
+
+          allprojects { project ->
+              project.afterEvaluate {
+                  project.tasks.configureEach { task ->
+                      if (task instanceof JavaCompile) {
+                          task.sourceCompatibility = '17'
+                          task.targetCompatibility = '17'
+                          task.options.release.set(17)
+                      }
+                      if (task.class.name.contains('KotlinCompile')) {
+                          try { task.kotlinOptions.jvmTarget = '17' } catch (Exception ignored) {}
+                      }
+                  }
+              }
+          }
+          EOF
+
+          # Keep Gradle's validation from failing before the plugin task receives
+          # the target above; the task configuration remains authoritative.
+          printf '\nkotlin.jvm.target.validation.mode=warning\n' >> /tmp/statushd/gradle.properties
       - name: Set Android compile SDK for current plugins
         run: |
           python3 - <<'PY'
@@ -129,14 +168,16 @@ jobs:
               raise SystemExit("Generated Android app Gradle file was not found")
           source = gradle.read_text()
           dependencies = (
-              ("androidx.media3:media3-transformer", "androidx.media3:media3-effect")
+              "androidx.media3:media3-transformer",
+              "androidx.media3:media3-effect",
+              "org.tensorflow:tensorflow-lite",
           )
           if not all(dep in source for dep in dependencies):
               if gradle.suffix == ".kts":
-                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n'
+                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n    implementation("org.tensorflow:tensorflow-lite:2.16.1")\n'
                   pattern = r"dependencies\s*\{"
               else:
-                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n'
+                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n    implementation "org.tensorflow:tensorflow-lite:2.16.1"\n'
                   pattern = r"dependencies\s*\{"
               match = re.search(pattern, source)
               if match:
@@ -172,7 +213,9 @@ jobs:
           cp -R assets /tmp/statushd/
           cp pubspec.yaml analysis_options.yaml /tmp/statushd/
           mkdir -p /tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd
-          cp android/MainActivity.kt /tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd/MainActivity.kt
+          for file in MainActivity.kt SuperResolutionEngine.kt NeuralFrameProcessor.kt NeuralVideoFrameLoop.kt NeuralVideoEncoder.kt NeuralAudioMuxer.kt NeuralVideoProcessor.kt; do
+            cp "android/$file" "/tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd/$file"
+          done
 
       - name: Resolve dependencies
         working-directory: /tmp/statushd
