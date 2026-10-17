@@ -1,0 +1,14 @@
+plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android'; id 'dev.flutter.flutter-gradle-plugin' }
+
+android { namespace 'com.ptip.statushd'; compileSdk 35
+    defaultConfig { applicationId 'com.ptip.statushd'; minSdk 24; targetSdk 35; versionCode 1; versionName '1.0' }
+    sourceSets { main.java.srcDirs += ['..'] }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.15.0'
+    implementation 'androidx.media3:media3-common:1.5.1'
+    implementation 'androidx.media3:media3-effect:1.5.1'
+    implementation 'androidx.media3:media3-transformer:1.5.1'
+    implementation 'org.tensorflow:tensorflow-lite:2.16.1'
+}

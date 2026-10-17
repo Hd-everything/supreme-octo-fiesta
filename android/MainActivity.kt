@@ -59,10 +59,19 @@ class MainActivity : FlutterActivity() {
     private val videoLibraryRequestCode = 7001
     private val mediaLibraryRequestCode = 7002
     private var activeTransformer: Transformer? = null
+    private var superResolutionEngine: SuperResolutionEngine? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+            if (call.method == "neuralSuperResolutionCapability") {
+                try {
+                    result.success((superResolutionEngine ?: SuperResolutionEngine(this).also { superResolutionEngine = it }).capability())
+                } catch (error: Exception) {
+                    result.success(mapOf("ready" to false, "reason" to (error.message ?: "model_initialization_failed")))
+                }
+                return@setMethodCallHandler
+            }
             if (call.method == "inspectVideo") {
                 val path = call.argument<String>("inputPath")
                 if (path.isNullOrBlank() || !File(path).isFile) {
@@ -432,6 +441,12 @@ class MainActivity : FlutterActivity() {
             }
         }
         return videos
+    }
+
+    override fun onDestroy() {
+        superResolutionEngine?.close()
+        superResolutionEngine = null
+        super.onDestroy()
     }
 
     private fun inspectVideo(path: String): Map<String, Any> {

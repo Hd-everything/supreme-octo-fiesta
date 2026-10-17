@@ -128,6 +128,9 @@ class VideoProcessingService {
   /// callers must not label a resize as neural restoration.
   Future<SuperResolutionCapability> neuralCapability() => _superResolution.capability();
 
+  Future<Map<String, dynamic>> nativeNeuralCapability() async =>
+      (await _channel.invokeMapMethod<String, dynamic>('neuralSuperResolutionCapability')) ?? const <String, dynamic>{'ready': false};
+
   Future<void> closeNeuralRuntime() => _superResolution.close();
 
   Future<VideoMetadata> inspect(String path) async {
