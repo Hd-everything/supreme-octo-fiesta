@@ -30,25 +30,42 @@ jobs:
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
       - name: Tests
         run: flutter test
-      - name: Align file_picker JVM targets
-        working-directory: ${{ github.workspace }}
+      - name: Align Android plugin JVM targets
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import os
+
           cache = Path(os.environ.get("PUB_CACHE", str(Path.home() / ".pub-cache")))
-          candidates = sorted(cache.glob("hosted/*/file_picker-*/android/build.gradle*"))
-          if not candidates:
-              raise SystemExit("Could not locate resolved file_picker Android Gradle project")
-          gradle = candidates[-1]
-          source = gradle.read_text()
-          marker = "// StatusHD file_picker JVM target alignment"
-          if marker not in source:
-              source += f'''\n\n{marker}\nafterEvaluate {{\n    tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{\n        sourceCompatibility = "17"\n        targetCompatibility = "17"\n        options.release.set(17)\n    }}\n    tasks.matching {{ it.class.name.contains("KotlinCompile") }}.configureEach {{ task ->\n        try {{ task.kotlinOptions.jvmTarget = "17" }} catch (Exception ignored) {{}}\n    }}\n}}\n'''
+          packages = ("file_picker", "screen_brightness_android", "tflite_flutter")
+          for package in packages:
+              candidates = sorted(cache.glob(f"hosted/*/{package}-*/android/build.gradle"))
+              if not candidates:
+                  print(f"No Groovy Android Gradle file found for {package}; skipping")
+                  continue
+              gradle = candidates[-1]
+              source = gradle.read_text()
+              marker = f"// StatusHD JVM target alignment for {package}"
+              if marker in source:
+                  continue
+              source += f"""
+
+          {marker}
+          afterEvaluate {{
+              tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{
+                  sourceCompatibility = "17"
+                  targetCompatibility = "17"
+                  options.release.set(17)
+              }}
+              tasks.matching {{ it.class.name.contains("KotlinCompile") }}.configureEach {{ task ->
+                  try {{ task.kotlinOptions.jvmTarget = "17" }} catch (Exception ignored) {{}}
+              }}
+          }}
+          """
               gradle.write_text(source)
-          print(f"Aligned file_picker Java/Kotlin targets in {gradle}")
+              print(f"Aligned Java/Kotlin targets in {gradle}")
           PY
 
       - name: Build release APK
