@@ -2,23 +2,14 @@ plugins {
     id 'com.android.application' version '8.5.2' apply false
 }
 
+// Keep third-party Android plugin projects on their declared Java 11 target.
+// The app module itself sets Java/Kotlin 17 in android/app/build.gradle.
 subprojects {
     tasks.withType(JavaCompile).configureEach {
-        sourceCompatibility = '17'
-        targetCompatibility = '17'
+        sourceCompatibility = '11'
+        targetCompatibility = '11'
     }
     tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-        kotlinOptions.jvmTarget = '17'
-    }
-}
-
-gradle.projectsEvaluated {
-    allprojects {
-        tasks.withType(JavaCompile).configureEach {
-            options.release.set(17)
-        }
-        tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-            kotlinOptions.jvmTarget = '17'
-        }
+        kotlinOptions.jvmTarget = '11'
     }
 }
