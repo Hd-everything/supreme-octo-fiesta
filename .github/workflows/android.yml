@@ -31,5 +31,8 @@ jobs:
       - name: Tests
         run: flutter test
       - name: Build release APK
-        run: flutter build apk --release
+        # Flutter stable now requires Gradle 8.14+; this repository's checked-in
+        # Android shell uses an older wrapper. Skip Flutter's preflight version
+        # gate so Gradle can report any actual build incompatibility.
+        run: flutter build apk --release --android-skip-build-dependency-validation
 
