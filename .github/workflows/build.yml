@@ -100,10 +100,10 @@ jobs:
                   text = text.replace("<application", permission + "\n    <application", 1)
           ads = '<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8529698532324480~6965542136" />'
           if "com.google.android.gms.ads.APPLICATION_ID" not in text:
-              match = re.search(r"<application\\b([^>]*)>", text)
+              match = re.search(r"<application\b([^>]*)>", text)
               if not match:
                   raise SystemExit("Generated application manifest tag not found")
-              text = text[:match.start()] + f"<application{match.group(1)}>\\n{ads}" + text[match.end():]
+              text = text[:match.start()] + f"<application{match.group(1)}>\n{ads}" + text[match.end():]
           provider = """        <provider
               android:name="androidx.startup.InitializationProvider"
               android:authorities="${applicationId}.androidx-startup"
@@ -146,7 +146,7 @@ jobs:
           import os
 
           cache = Path(os.environ.get("PUB_CACHE", str(Path.home() / ".pub-cache")))
-          for package in ("file_picker", "tflite_flutter"):
+          for package in ("file_picker", "tflite_flutter", "screen_brightness_android"):
               candidates = sorted(cache.glob(f"hosted/*/{package}-*/android/build.gradle*"))
               if not candidates:
                   continue
@@ -246,18 +246,18 @@ jobs:
           if "keystorePropertiesFile" not in source:
               source = setup + source
           if "signingConfigs {" not in source:
-              match = re.search(r"android\\s*\\{", source)
+              match = re.search(r"android\s*\{", source)
               if not match:
                   raise SystemExit("Android Gradle block not found")
-              source = source[:match.end()] + "\\n" + signing + source[match.end():]
+              source = source[:match.end()] + "\n" + signing + source[match.end():]
           match = re.search(r"(release\\s*\\{)(.*?)(\\n\\s*\\})", source, re.S)
           if not match:
               raise SystemExit("Release build type not found")
           body = match.group(2)
           if "signingConfig" not in body:
-              body += "\\n            " + assignment + "\\n        "
+              body += "\n            " + assignment + "\n        "
           else:
-              body = re.sub(r"signingConfig\\s*(?:=\\s*)?[^\\n]+", assignment, body)
+              body = re.sub(r"signingConfig\s*(?:=\s*)?[^\n]+", assignment, body)
           source = source[:match.start(2)] + body + source[match.end(2):]
           gradle.write_text(source)
           PY
