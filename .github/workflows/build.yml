@@ -154,14 +154,14 @@ jobs:
           dependencies = (
               "androidx.media3:media3-transformer",
               "androidx.media3:media3-effect",
-              "org.tensorflow:tensorflow-lite-api",
+              "com.google.ai.edge.litert:litert-api",
           )
           if not all(dep in source for dep in dependencies):
               if gradle.suffix == ".kts":
-                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n    implementation("org.tensorflow:tensorflow-lite-api:2.16.1")\n'
+                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n    implementation("com.google.ai.edge.litert:litert-api:1.4.0")\n'
                   pattern = r"dependencies\s*\{"
               else:
-                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n    implementation "org.tensorflow:tensorflow-lite-api:2.16.1"\n'
+                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n    implementation "com.google.ai.edge.litert:litert-api:1.4.0"\n'
                   pattern = r"dependencies\s*\{"
               match = re.search(pattern, source)
               if match:
