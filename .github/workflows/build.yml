@@ -70,6 +70,12 @@ jobs:
           import re
           manifest = Path("/tmp/statushd/android/app/src/main/AndroidManifest.xml")
           source = manifest.read_text()
+          if 'xmlns:tools=' not in source:
+              source = source.replace(
+                  'xmlns:android="http://schemas.android.com/apk/res/android"',
+                  'xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools"',
+                  1,
+              )
           metadata = '        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8529698532324480~6965542136" />'
           if "com.google.android.gms.ads.APPLICATION_ID" not in source:
               match = re.search(r"<application\b([^>]*)>", source)
@@ -77,6 +83,17 @@ jobs:
                   raise SystemExit("Could not find the generated application manifest tag")
               application = f"<application{match.group(1)}>\n{metadata}"
               source = source[:match.start()] + application + source[match.end():]
+          if "androidx.work.WorkManagerInitializer" not in source:
+              provider = '''        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                tools:node="remove" />
+        </provider>'''
+              source = source.replace("</application>", provider + "\n    </application>", 1)
           manifest.write_text(source)
           PY
 
