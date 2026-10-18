@@ -41,7 +41,7 @@ jobs:
           cache = Path(os.environ.get("PUB_CACHE", str(Path.home() / ".pub-cache")))
           packages = ("file_picker", "screen_brightness_android", "tflite_flutter")
           for package in packages:
-              candidates = sorted(cache.glob(f"hosted/*/{package}-*/android/build.gradle"))
+              candidates = sorted(cache.glob(f"hosted/*/{package}-*/android/build.gradle*"))
               if not candidates:
                   print(f"No Groovy Android Gradle file found for {package}; skipping")
                   continue
