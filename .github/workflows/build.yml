@@ -1,7 +1,8 @@
 name: Build Status HD
 
 on:
-  # Manual-only: android.yml is the single automatic verification/release workflow.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
