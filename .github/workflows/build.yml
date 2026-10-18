@@ -52,9 +52,13 @@ jobs:
               text = text.replace("RepositoriesMode.FAIL_ON_PROJECT_REPOS", "RepositoriesMode.PREFER_PROJECT")
               lines = text.splitlines()
               for i, line in enumerate(lines):
-                  if "org.jetbrains.kotlin.android" in line:
-                      lines[i] = re.sub(r"(version\\s+['\"])[^'\"]+(['\"])", r"\\g<1>2.2.0\\g<2>", line)
-              text = "\\n".join(lines) + "\\n"
+                  if "org.jetbrains.kotlin.android" in line and "version" in line:
+                      prefix = line[:line.index("version")]
+                      if "id '" in line:
+                          lines[i] = prefix + "version '2.2.0' apply false"
+                      else:
+                          lines[i] = prefix + 'version "2.2.0" apply false'
+              text = "\n".join(lines) + "\n"
               settings.write_text(text)
 
           app = root / "app"
