@@ -2,14 +2,15 @@ plugins {
     id 'com.android.application' version '8.5.2' apply false
 }
 
-// Keep third-party Android plugin projects on their declared Java 11 target.
-// The app module itself sets Java/Kotlin 17 in android/app/build.gradle.
+// Keep Java and Kotlin compile targets aligned across every Flutter Android plugin.
+// The current Flutter toolchain and app module use Java 17.
 subprojects {
     tasks.withType(JavaCompile).configureEach {
-        sourceCompatibility = '11'
-        targetCompatibility = '11'
+        sourceCompatibility = '17'
+        targetCompatibility = '17'
+        options.release.set(17)
     }
     tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-        kotlinOptions.jvmTarget = '11'
+        kotlinOptions.jvmTarget = '17'
     }
 }
