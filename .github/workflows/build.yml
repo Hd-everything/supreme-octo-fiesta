@@ -83,7 +83,7 @@ jobs:
           # The generated Flutter app configures Java 17, but tflite_flutter is
           # a separate Gradle project and may still default its Java task to 11.
           # Its plugin build file is patched after dependency resolution below.
-          printf '\nkotlin.jvm.target.validation.mode=warning\n' >> /tmp/statushd/gradle.properties
+          printf '\nkotlin.jvm.target.validation.mode=warning\norg.gradle.vfs.watch=false\norg.gradle.daemon=false\n' >> /tmp/statushd/gradle.properties
 
       - name: Set Android compile SDK for current plugins
         run: |
