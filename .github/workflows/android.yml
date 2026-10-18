@@ -50,8 +50,25 @@ jobs:
               marker = f"// StatusHD JVM target alignment for {package}"
               if marker in source:
                   continue
-              source += f"""
-
+              if gradle.suffix == ".kts":
+                  source += f"""
+          {marker}
+          afterEvaluate {{
+              tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {{
+                  sourceCompatibility = "17"
+                  targetCompatibility = "17"
+                  options.release.set(17)
+              }}
+              tasks.matching {{ it.javaClass.name.contains("KotlinCompile") }}.configureEach {{
+                  val options = extensions.findByName("kotlinOptions")
+                  if (options != null) {{
+                      options.javaClass.methods.firstOrNull {{ it.name == "setJvmTarget" && it.parameterCount == 1 }}?.invoke(options, "17")
+                  }}
+              }}
+          }}
+          """
+              else:
+                  source += f"""
           {marker}
           afterEvaluate {{
               tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{
