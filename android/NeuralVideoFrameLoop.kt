@@ -26,7 +26,7 @@ class NeuralVideoFrameLoop(
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(inputPath)
-            val durationUs = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_DURATION)?.toLongOrNull() ?: 0L) * 1000L
+            val durationUs = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) * 1000L
             val frameRate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toDoubleOrNull()?.coerceIn(1.0, 120.0) ?: 30.0
             val stepUs = (1_000_000.0 / frameRate).toLong().coerceAtLeast(1L)
             var timestampUs = 0L

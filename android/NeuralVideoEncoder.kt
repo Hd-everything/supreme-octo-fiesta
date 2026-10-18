@@ -20,7 +20,7 @@ class NeuralVideoEncoder(private val output: File, private val width: Int, priva
 
     init {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.COLOR_FormatYUV420Flexible)
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
             setInteger(MediaFormat.KEY_BIT_RATE, (width * height * frameRate * 0.08).toInt().coerceIn(900_000, 18_000_000))
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)

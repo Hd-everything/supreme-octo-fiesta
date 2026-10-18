@@ -20,7 +20,6 @@ import androidx.media3.effect.SeparableConvolution
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.TextOverlay
-import androidx.media3.effect.StaticOverlaySettings
 import android.text.SpannableString
 import android.text.style.ForegroundColorSpan
 import android.graphics.Color
@@ -135,7 +134,7 @@ class MainActivity : FlutterActivity() {
                     if (call.argument<Boolean>("watermark") != false) {
                         val label = SpannableString("statushd")
                         label.setSpan(ForegroundColorSpan(Color.WHITE), 0, label.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                        effects.add(OverlayEffect(listOf(TextOverlay.createStaticTextOverlay(label, StaticOverlaySettings.Builder().setAlphaScale(.72f).build()))))
+                        effects.add(OverlayEffect(listOf(TextOverlay.createStaticTextOverlay(label))))
                     }
                 } else {
                     val ratio = call.argument<Number>("cropAspectRatio")?.toDouble() ?: 0.0
@@ -164,7 +163,7 @@ class MainActivity : FlutterActivity() {
                     effects.add(Presentation.createForWidthAndHeight(outputWidth, outputHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
                     val label = SpannableString("statushd")
                     label.setSpan(ForegroundColorSpan(Color.WHITE), 0, label.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    effects.add(OverlayEffect(listOf(TextOverlay.createStaticTextOverlay(label, StaticOverlaySettings.Builder().setAlphaScale(.72f).build()))))
+                    effects.add(OverlayEffect(listOf(TextOverlay.createStaticTextOverlay(label))))
                 }
                 val outputFile = File(outputPath)
                 outputFile.parentFile?.mkdirs()
