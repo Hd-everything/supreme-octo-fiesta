@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'media_manager_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
 import 'services/media_processing/processing_job_queue.dart';
+import 'services/media_processing/output_history.dart';
 
 /// A focused, cinema-style local movie player using libmpv/media_kit.
 /// Video enhancement uses the app's native Media3 encoder for conventional
@@ -32,6 +33,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   late final VideoController _video;
   final TextEditingController _search = TextEditingController();
   List<Map<String,String>> _videos = [];
+  List<OutputHistoryEntry> _outputs = <OutputHistoryEntry>[];
   List<Map<String,String>> _recent = [];
   Set<String> _favorites = <String>{};
   String? _path;
@@ -62,6 +64,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     _resumeTimer = Timer.periodic(const Duration(seconds: 5), (_) => _persistResume());
     _loadRecent();
     _loadFavorites();
+    _loadOutputHistory();
     _scan();
     if (widget.initialPath != null && widget.initialPath!.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _open(widget.initialPath!, widget.initialName ?? File(widget.initialPath!).uri.pathSegments.last));
@@ -112,6 +115,14 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     if (mounted) setState(() => _favorites = (prefs.getStringList('movie_favorites_v1') ?? const <String>[]).toSet());
   }
 
+  Future<void> _loadOutputHistory() async {
+    try {
+      final entries = await OutputHistory().load();
+      if (mounted) setState(() => _outputs = entries);
+      if (mounted) unawaited(_scan());
+    } catch (_) {}
+  }
+
   Future<void> _toggleFavorite(String path) async {
     final next = {..._favorites};
     if (!next.add(path)) next.remove(path);
@@ -146,6 +157,11 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
           final path = item['path']?.toString() ?? '';
           final name = item['name']?.toString() ?? '';
           if (path.isNotEmpty && name.isNotEmpty) next.add({'path':path,'name':name});
+        }
+      }
+      for (final entry in _outputs) {
+        if (entry.path.isNotEmpty && File(entry.path).existsSync() && !next.any((item) => item['path'] == entry.path)) {
+          next.add({'path': entry.path, 'name': entry.name});
         }
       }
       if (mounted) setState(() { _videos = next; _error = null; });
@@ -250,6 +266,17 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       setState(() { _path = result.path; _name = 'Enhanced copy · ${_target}p'; _width = result.metadata.width; _height = result.metadata.height; _status = 'Playing your new ${_target}p copy'; });
       await _player.open(Media(result.path), play: true);
       await _saveRecent(result.path, _name!);
+      await OutputHistory().add(OutputHistoryEntry(
+        path: result.path,
+        name: _name!,
+        operation: 'enhanced',
+        createdAt: DateTime.now(),
+        width: result.metadata.width,
+        height: result.metadata.height,
+        durationMs: result.metadata.durationMs,
+        sourcePath: source,
+      ));
+      await _loadOutputHistory();
       _armControls();
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not improve this video: ${e.toString().replaceFirst('Exception: ','')}');
@@ -307,7 +334,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       final tabMatch = switch (_libraryTab) {
         'Recent' => recent,
         'Favorites' => _favorites.contains(path),
-        'Processed' => (v['name'] ?? '').toLowerCase().contains('processed') || (v['name'] ?? '').toLowerCase().contains('enhanced'),
+        'Processed' => _outputs.any((entry) => entry.path == path),
         'Downloads' => path.toLowerCase().contains('/download') || path.toLowerCase().contains('\\download'),
         _ => true,
       };
@@ -407,7 +434,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
               IconButton(onPressed:_backToLibrary,icon:const Icon(Icons.arrow_back_rounded,color:Colors.white)),
               Expanded(child:Text(_name??'',maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))),
               IconButton(tooltip:_locked?'Unlock controls':'Lock controls',onPressed:(){_hideTimer?.cancel();setState(()=>_locked=!_locked);},icon:Icon(_locked?Icons.lock_rounded:Icons.lock_open_rounded,color:Colors.white)),
-              IconButton(onPressed:()=>setState(()=>_speed=_speed==2?0.5:_speed+0.25),icon:Text('${_speed.toStringAsFixed(2)}×',style:const TextStyle(color:Colors.white,fontSize:12))),
+              IconButton(tooltip:'Playback speed',onPressed:() { final next = _speed == 2 ? 0.5 : _speed + 0.25; setState(() => _speed = next); unawaited(_player.setRate(next)); },icon:Text('${_speed.toStringAsFixed(2)}×',style:const TextStyle(color:Colors.white,fontSize:12))),
             ])),
             Center(child:Row(mainAxisAlignment:MainAxisAlignment.center,children:[
               IconButton(iconSize:35,onPressed:()=>_player.seek(_player.state.position-Duration(seconds:10)),icon:const Icon(Icons.replay_10_rounded,color:Colors.white)),
