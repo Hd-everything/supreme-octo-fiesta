@@ -47,6 +47,9 @@ jobs:
                   continue
               gradle = candidates[-1]
               source = gradle.read_text()
+              if gradle.suffix == ".kts":
+                  source = source.replace('kotlinOptions.jvmTarget = "1.8"', 'compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)')
+                  source = source.replace('kotlinOptions.jvmTarget = "17"', 'compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)')
               marker = f"// StatusHD JVM target alignment for {package}"
               if marker in source:
                   continue
