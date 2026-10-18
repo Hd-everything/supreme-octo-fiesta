@@ -273,7 +273,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         createdAt: DateTime.now(),
         width: result.metadata.width,
         height: result.metadata.height,
-        durationMs: result.metadata.durationMs,
+        durationMs: result.metadata.duration.inMilliseconds,
         sourcePath: source,
       ));
       await _loadOutputHistory();
