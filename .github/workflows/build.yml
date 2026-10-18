@@ -1,41 +1,32 @@
 name: Build Status HD
 
-on:
+'on':
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: status-hd-${{ github.workflow }}-${{ github.ref }}
+  group: statushd-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   android:
-    name: Android APK
+    name: Build signed Android APK
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - name: Check out source
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Reclaim runner disk space
-        run: |
-          set -euxo pipefail
-          df -h /
-          # Remove preinstalled toolchains and Android emulator images not used by this build.
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/powershell
-          sudo rm -rf "${ANDROID_HOME}/system-images" "${ANDROID_HOME}/emulator"
-          # Keep runner-provided NDKs. Removing them forces a large network
-          # download and makes builds fail on transient SDK mirror errors.
-          df -h /
-
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -43,265 +34,173 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Generate Android platform project
+      - name: Generate Android project
+        shell: bash
         run: |
           set -euo pipefail
           flutter create --platforms=android --org com.ptip --project-name statushd /tmp/statushd
-          # Flutter's Gradle plugin adds a Maven repository at project level.
-          # FAIL_ON_PROJECT_REPOS rejects that repository and breaks assembleRelease.
-          python3 - <<'PY'
-          from pathlib import Path
-          settings = Path("/tmp/statushd/android/settings.gradle")
-          if not settings.exists():
-              settings = Path("/tmp/statushd/android/settings.gradle.kts")
-          source = settings.read_text()
-          source = source.replace(
-              "RepositoriesMode.FAIL_ON_PROJECT_REPOS",
-              "RepositoriesMode.PREFER_PROJECT",
-          )
-          settings.write_text(source)
-          print(f"Adjusted Gradle repository mode in {settings}")
-          PY
-
-      - name: Add video library permissions
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          manifest = Path("/tmp/statushd/android/app/src/main/AndroidManifest.xml")
-          source = manifest.read_text()
-          permissions = [
-              '    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
-              '    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
-          ]
-          for permission in permissions:
-              name = permission.split('"')[1]
-              if name not in source:
-                  source = source.replace("<application", permission + "\n    <application", 1)
-          manifest.write_text(source)
-          PY
-
-      - name: Configure generated Android metadata
-        run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
-          manifest = Path("/tmp/statushd/android/app/src/main/AndroidManifest.xml")
-          source = manifest.read_text()
-          if 'xmlns:tools=' not in source:
-              source = source.replace(
+
+          root = Path("/tmp/statushd/android")
+          settings = root / "settings.gradle"
+          if not settings.exists():
+              settings = root / "settings.gradle.kts"
+          if settings.exists():
+              text = settings.read_text()
+              text = text.replace("RepositoriesMode.FAIL_ON_PROJECT_REPOS", "RepositoriesMode.PREFER_PROJECT")
+              settings.write_text(text)
+
+          app = root / "app"
+          gradle = next((p for p in (app / "build.gradle.kts", app / "build.gradle") if p.exists()), None)
+          if gradle is None:
+              raise SystemExit("Generated Android app Gradle file not found")
+          text = gradle.read_text()
+          if gradle.suffix == ".kts":
+              text, n1 = re.subn(r"compileSdk\s*=\s*(?:flutter\.compileSdkVersion|\d+)", "compileSdk = 36", text, count=1)
+              text, n2 = re.subn(r'ndkVersion\s*=\s*(?:flutter\.ndkVersion|"[^"]+"|\d+(?:\.\d+)+)', 'ndkVersion = "28.2.13676358"', text, count=1)
+              deps = """
+              implementation("androidx.media3:media3-transformer:1.5.1")
+              implementation("androidx.media3:media3-effect:1.5.1")
+              implementation("com.google.ai.edge.litert:litert-api:1.4.0")
+              """
+          else:
+              text, n1 = re.subn(r"compileSdkVersion\s+(?:flutter\.compileSdkVersion|\d+)", "compileSdkVersion 36", text, count=1)
+              text, n2 = re.subn(r'ndkVersion\s+(?:flutter\.ndkVersion|"[^"]+"|\d+(?:\.\d+)+)', 'ndkVersion "28.2.13676358"', text, count=1)
+              deps = """
+              implementation "androidx.media3:media3-transformer:1.5.1"
+              implementation "androidx.media3:media3-effect:1.5.1"
+              implementation "com.google.ai.edge.litert:litert-api:1.4.0"
+              """
+          if not n1:
+              raise SystemExit("Could not set Android compile SDK")
+          if not n2:
+              raise SystemExit("Could not set Android NDK version")
+          if "androidx.media3:media3-transformer" not in text:
+              text, n = re.subn(r"dependencies\s*\{", lambda m: m.group(0) + deps, text, count=1)
+              if not n:
+                  text += "\ndependencies {\n" + deps + "\n}\n"
+          gradle.write_text(text)
+
+          manifest = app / "src/main/AndroidManifest.xml"
+          text = manifest.read_text()
+          if "xmlns:tools=" not in text:
+              text = text.replace(
                   'xmlns:android="http://schemas.android.com/apk/res/android"',
                   'xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools"',
                   1,
               )
-          metadata = '        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8529698532324480~6965542136" />'
-          if "com.google.android.gms.ads.APPLICATION_ID" not in source:
-              match = re.search(r"<application\b([^>]*)>", source)
+          permissions = [
+              '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
+              '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
+          ]
+          for permission in permissions:
+              if permission.split('"')[1] not in text:
+                  text = text.replace("<application", permission + "\n    <application", 1)
+          ads = '<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8529698532324480~6965542136" />'
+          if "com.google.android.gms.ads.APPLICATION_ID" not in text:
+              match = re.search(r"<application\\b([^>]*)>", text)
               if not match:
-                  raise SystemExit("Could not find the generated application manifest tag")
-              application = f"<application{match.group(1)}>\n{metadata}"
-              source = source[:match.start()] + application + source[match.end():]
-          if "androidx.work.WorkManagerInitializer" not in source:
-              provider = '''        <provider
-            android:name="androidx.startup.InitializationProvider"
-            android:authorities="${applicationId}.androidx-startup"
-            android:exported="false"
-            tools:node="merge">
-            <meta-data
-                android:name="androidx.work.WorkManagerInitializer"
-                tools:node="remove" />
-        </provider>'''
-              source = source.replace("</application>", provider + "\n    </application>", 1)
-          manifest.write_text(source)
+                  raise SystemExit("Generated application manifest tag not found")
+              text = text[:match.start()] + f"<application{match.group(1)}>\\n{ads}" + text[match.end():]
+          provider = """        <provider
+              android:name="androidx.startup.InitializationProvider"
+              android:authorities="${applicationId}.androidx-startup"
+              android:exported="false"
+              tools:node="merge">
+              <meta-data android:name="androidx.work.WorkManagerInitializer" tools:node="remove" />
+          </provider>"""
+          if "androidx.work.WorkManagerInitializer" not in text:
+              text = text.replace("</application>", provider + "\n    </application>", 1)
+          manifest.write_text(text)
           PY
 
-          # The generated Flutter app configures Java 17, but tflite_flutter is
-          # a separate Gradle project and may still default its Java task to 11.
-          # Its plugin build file is patched after dependency resolution below.
           printf '\nkotlin.jvm.target.validation.mode=warning\norg.gradle.vfs.watch=false\norg.gradle.daemon=false\n' >> /tmp/statushd/gradle.properties
 
-      - name: Set Android compile SDK for current plugins
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          gradle = Path("/tmp/statushd/android/app/build.gradle.kts")
-          if gradle.exists():
-              source = gradle.read_text()
-              updated, count = re.subn(r"compileSdk\s*=\s*flutter\.compileSdkVersion", "compileSdk = 36", source, count=1)
-              if count == 0:
-                  updated, count = re.subn(r"compileSdk\s*=\s*\d+", "compileSdk = 36", source, count=1)
-              if count == 0:
-                  raise SystemExit("Could not set compileSdk in generated Kotlin Gradle file")
-              gradle.write_text(updated)
-          else:
-              gradle = Path("/tmp/statushd/android/app/build.gradle")
-              source = gradle.read_text()
-              updated, count = re.subn(r"compileSdkVersion\s+flutter\.compileSdkVersion", "compileSdkVersion 36", source, count=1)
-              if count == 0:
-                  updated, count = re.subn(r"compileSdkVersion\s+\d+", "compileSdkVersion 36", source, count=1)
-              if count == 0:
-                  raise SystemExit("Could not set compileSdk in generated Gradle file")
-              gradle.write_text(updated)
-          PY
-
-      - name: Align generated Android NDK with installed toolchain
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          root = Path("/tmp/statushd/android/app")
-          candidates = [root / "build.gradle.kts", root / "build.gradle"]
-          gradle = next((path for path in candidates if path.exists()), None)
-          if gradle is None:
-              raise SystemExit("Generated Android app Gradle file was not found")
-          source = gradle.read_text()
-          if gradle.suffix == ".kts":
-              updated, count = re.subn(
-                  r'ndkVersion\s*=\s*(?:flutter\.ndkVersion|"[^"]+"|\d+(?:\.\d+)+)',
-                  'ndkVersion = "28.2.13676358"',
-                  source,
-                  count=1,
-              )
-          else:
-              updated, count = re.subn(
-                  r'ndkVersion\s+(?:flutter\.ndkVersion|"[^"]+"|\d+(?:\.\d+)+)',
-                  'ndkVersion "28.2.13676358"',
-                  source,
-                  count=1,
-              )
-          if count == 0:
-              raise SystemExit("Could not pin NDK version in generated Gradle file")
-          gradle.write_text(updated)
-          print(f"Pinned NDK in {gradle} to 28.2.13676358")
-          PY
-
-      - name: Add Media3 video processing dependencies
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          root = Path("/tmp/statushd/android/app")
-          gradle = next((p for p in (root / "build.gradle.kts", root / "build.gradle") if p.exists()), None)
-          if gradle is None:
-              raise SystemExit("Generated Android app Gradle file was not found")
-          source = gradle.read_text()
-          dependencies = (
-              "androidx.media3:media3-transformer",
-              "androidx.media3:media3-effect",
-              "com.google.ai.edge.litert:litert-api",
-          )
-          if not all(dep in source for dep in dependencies):
-              if gradle.suffix == ".kts":
-                  lines = '\n    implementation("androidx.media3:media3-transformer:1.5.1")\n    implementation("androidx.media3:media3-effect:1.5.1")\n    implementation("com.google.ai.edge.litert:litert-api:1.4.0")\n'
-                  pattern = r"dependencies\s*\{"
-              else:
-                  lines = '\n    implementation "androidx.media3:media3-transformer:1.5.1"\n    implementation "androidx.media3:media3-effect:1.5.1"\n    implementation "com.google.ai.edge.litert:litert-api:1.4.0"\n'
-                  pattern = r"dependencies\s*\{"
-              match = re.search(pattern, source)
-              if match:
-                  source = source[:match.end()] + lines + source[match.end():]
-              else:
-                  source += "\ndependencies {\n" + lines + "\n}\n"
-              gradle.write_text(source)
-          print(f"Media3 dependencies verified in {gradle}")
-          PY
-
-      - name: Install Android NDK with retry
+      - name: Copy StatusHD sources
+        shell: bash
         run: |
           set -euo pipefail
-          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          NDK_VERSION="28.2.13676358"
-          NDK_DIR="${ANDROID_HOME}/ndk/${NDK_VERSION}"
-          if [ -f "${NDK_DIR}/source.properties" ]; then
-            echo "Using preinstalled Android NDK ${NDK_VERSION}."
-            exit 0
-          fi
-          # Accept SDK licenses separately. Do not pipe `yes` into the install
-          # command: sdkmanager exits successfully after extraction, while `yes`
-          # receives SIGPIPE and makes a pipefail-enabled shell report failure.
-          yes | "${SDKMANAGER}" --licenses --sdk_root="${ANDROID_HOME}" >/dev/null 2>&1 || true
-          for attempt in 1 2 3 4 5; do
-            echo "Installing Android NDK ${NDK_VERSION} (attempt ${attempt}/5)"
-            if "${SDKMANAGER}" --install "ndk;${NDK_VERSION}" --sdk_root="${ANDROID_HOME}"; then
-              if [ -f "${NDK_DIR}/source.properties" ]; then
-                exit 0
-              fi
-            fi
-            echo "NDK install incomplete; removing only the partial requested package before retry."
-            rm -rf "${NDK_DIR}"
-            sleep $((attempt * 15))
-          done
-          echo "::error::Android NDK ${NDK_VERSION} installation failed after 5 attempts."
-          "${SDKMANAGER}" --list --sdk_root="${ANDROID_HOME}" | tail -n 80 || true
-          exit 1
-
-      - name: Copy app source into generated project
-        run: |
           rm -rf /tmp/statushd/lib /tmp/statushd/test
           cp -R lib test /tmp/statushd/
           cp -R assets /tmp/statushd/
           cp pubspec.yaml analysis_options.yaml /tmp/statushd/
           mkdir -p /tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd
           for file in MainActivity.kt SuperResolutionEngine.kt NeuralFrameProcessor.kt NeuralVideoFrameLoop.kt NeuralVideoEncoder.kt NeuralAudioMuxer.kt NeuralVideoProcessor.kt; do
+            test -f "android/$file"
             cp "android/$file" "/tmp/statushd/android/app/src/main/kotlin/com/ptip/statushd/$file"
           done
 
-      - name: Resolve dependencies
+      - name: Resolve Flutter dependencies
         working-directory: /tmp/statushd
         run: flutter pub get
 
-      - name: Align tflite_flutter JVM targets
+      - name: Align plugin JVM targets
         working-directory: /tmp/statushd
+        shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import os
 
           cache = Path(os.environ.get("PUB_CACHE", str(Path.home() / ".pub-cache")))
-          candidates = sorted(cache.glob("hosted/*/tflite_flutter-*/android/build.gradle*"))
-          if not candidates:
-              raise SystemExit("Could not locate the resolved tflite_flutter Android project")
-          gradle = candidates[-1]
-          source = gradle.read_text()
-          marker = "// StatusHD JVM target alignment"
-          if marker not in source:
-              source += f'''\n\n{marker}\nafterEvaluate {{\n    tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{\n        sourceCompatibility = "17"\n        targetCompatibility = "17"\n        options.release.set(17)\n    }}\n    tasks.matching {{ it.class.name.contains("KotlinCompile") }}.configureEach {{ task ->\n        try {{ task.kotlinOptions.jvmTarget = "17" }} catch (Exception ignored) {{}}\n    }}\n}}\n'''
+          for package in ("file_picker", "tflite_flutter"):
+              candidates = sorted(cache.glob(f"hosted/*/{package}-*/android/build.gradle*"))
+              if not candidates:
+                  continue
+              gradle = candidates[-1]
+              source = gradle.read_text()
+              marker = f"// StatusHD JVM target alignment for {package}"
+              if marker in source:
+                  continue
+              source += f"""
+          {marker}
+          afterEvaluate {{
+              tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{
+                  sourceCompatibility = "17"
+                  targetCompatibility = "17"
+                  options.release.set(17)
+              }}
+              tasks.matching {{ it.class.name.contains("KotlinCompile") }}.configureEach {{ task ->
+                  try {{ task.kotlinOptions.jvmTarget = "17" }} catch (Exception ignored) {{}}
+              }}
+          }}
+          """
               gradle.write_text(source)
-          print(f"Aligned JVM targets in {gradle}")
+              print(f"Aligned Java/Kotlin targets: {gradle}")
           PY
 
-      - name: Generate Android launcher icon
+      - name: Generate launcher icons
         working-directory: /tmp/statushd
         run: dart run flutter_launcher_icons
 
-      - name: Analyze Dart source
+      - name: Analyze and test
         working-directory: /tmp/statushd
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: |
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+          flutter test
 
-      - name: Run tests
+      - name: Configure release signing
         working-directory: /tmp/statushd
-        run: flutter test
-
-      - name: Configure Android release signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        working-directory: /tmp/statushd
+        shell: bash
         run: |
           set -euo pipefail
-          for secret_name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
-            if [ -z "${!secret_name:-}" ]; then
-              echo "::error::Required repository secret ${secret_name} is not configured."
+          for key in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!key:-}" ]; then
+              echo "::error::Required repository secret $key is missing"
               exit 1
             fi
           done
-
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
           test -s android/app/release.keystore
           chmod 600 android/app/release.keystore
-
           cat > android/key.properties <<EOF
           storePassword=$KEYSTORE_PASSWORD
           keyPassword=$KEY_PASSWORD
@@ -309,93 +208,68 @@ jobs:
           storeFile=release.keystore
           EOF
           chmod 600 android/key.properties
-
-      - name: Apply Android release signing configuration
-        working-directory: /tmp/statushd
-        run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          gradle = next(
-              (path for path in (Path("android/app/build.gradle.kts"), Path("android/app/build.gradle")) if path.exists()),
-              None,
-          )
-          if gradle is None:
-              raise SystemExit("Generated Android app Gradle file was not found")
-
+          gradle = next(p for p in (Path("android/app/build.gradle.kts"), Path("android/app/build.gradle")) if p.exists())
           source = gradle.read_text()
           if gradle.suffix == ".kts":
-              setup = '''
-          import java.util.Properties
-
+              setup = '''import java.util.Properties
           val keystoreProperties = Properties()
           val keystorePropertiesFile = rootProject.file("key.properties")
-          if (keystorePropertiesFile.exists()) {
-              keystoreProperties.load(keystorePropertiesFile.inputStream())
-          }
-
+          if (keystorePropertiesFile.exists()) keystoreProperties.load(keystorePropertiesFile.inputStream())
           '''
-              signing = '''
-          signingConfigs {
+              signing = '''signingConfigs {
               create("release") {
                   keyAlias = keystoreProperties["keyAlias"] as String
                   keyPassword = keystoreProperties["keyPassword"] as String
                   storeFile = file(keystoreProperties["storeFile"] as String)
                   storePassword = keystoreProperties["storePassword"] as String
               }
-          }
-          '''
-              release_signing = 'signingConfig = signingConfigs.getByName("release")'
+          }'''
+              assignment = 'signingConfig = signingConfigs.getByName("release")'
           else:
-              setup = '''
-          def keystoreProperties = new Properties()
+              setup = '''def keystoreProperties = new Properties()
           def keystorePropertiesFile = rootProject.file('key.properties')
-          if (keystorePropertiesFile.exists()) {
-              keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
-          }
-
+          if (keystorePropertiesFile.exists()) keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
           '''
-              signing = '''
-          signingConfigs {
+              signing = '''signingConfigs {
               release {
                   keyAlias keystoreProperties['keyAlias']
                   keyPassword keystoreProperties['keyPassword']
                   storeFile file(keystoreProperties['storeFile'])
                   storePassword keystoreProperties['storePassword']
               }
-          }
-          '''
-              release_signing = 'signingConfig signingConfigs.release'
-
-          if 'keystorePropertiesFile' not in source:
+          }'''
+              assignment = 'signingConfig signingConfigs.release'
+          if "keystorePropertiesFile" not in source:
               source = setup + source
-          if 'signingConfigs {' not in source:
-              android_match = re.search(r'android\s*\{', source)
-              if not android_match:
-                  raise SystemExit("Could not find the Android configuration block")
-              source = source[:android_match.end()] + signing + source[android_match.end():]
-
-          release_match = re.search(r'(release\s*\{)(.*?)(\n\s*\})', source, re.DOTALL)
-          if not release_match:
-              raise SystemExit("Could not find the release build type")
-          release_body = release_match.group(2)
-          if 'signingConfig' not in release_body:
-              release_body += "\n            " + release_signing + "\n        "
+          if "signingConfigs {" not in source:
+              match = re.search(r"android\\s*\\{", source)
+              if not match:
+                  raise SystemExit("Android Gradle block not found")
+              source = source[:match.end()] + "\\n" + signing + source[match.end():]
+          match = re.search(r"(release\\s*\\{)(.*?)(\\n\\s*\\})", source, re.S)
+          if not match:
+              raise SystemExit("Release build type not found")
+          body = match.group(2)
+          if "signingConfig" not in body:
+              body += "\\n            " + assignment + "\\n        "
           else:
-              release_body = re.sub(r'signingConfig\s*(?:=\s*)?[^\n]+', release_signing, release_body)
-          source = source[:release_match.start(2)] + release_body + source[release_match.end(2):]
+              body = re.sub(r"signingConfig\\s*(?:=\\s*)?[^\\n]+", assignment, body)
+          source = source[:match.start(2)] + body + source[match.end(2):]
           gradle.write_text(source)
-          print(f"Configured release signing in {gradle}")
           PY
 
-      - name: Build signed release APK
+      - name: Build signed APK
         working-directory: /tmp/statushd
         run: flutter build apk --release
 
-      - name: Upload signed Android APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v5
         with:
           name: statushd-android-release
           path: /tmp/statushd/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
           retention-days: 1
