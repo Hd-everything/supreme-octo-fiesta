@@ -44,7 +44,24 @@ jobs:
           cache: true
 
       - name: Generate Android platform project
-        run: flutter create --platforms=android --org com.ptip --project-name statushd /tmp/statushd
+        run: |
+          set -euo pipefail
+          flutter create --platforms=android --org com.ptip --project-name statushd /tmp/statushd
+          # Flutter's Gradle plugin adds a Maven repository at project level.
+          # FAIL_ON_PROJECT_REPOS rejects that repository and breaks assembleRelease.
+          python3 - <<'PY'
+          from pathlib import Path
+          settings = Path("/tmp/statushd/android/settings.gradle")
+          if not settings.exists():
+              settings = Path("/tmp/statushd/android/settings.gradle.kts")
+          source = settings.read_text()
+          source = source.replace(
+              "RepositoriesMode.FAIL_ON_PROJECT_REPOS",
+              "RepositoriesMode.PREFER_PROJECT",
+          )
+          settings.write_text(source)
+          print(f"Adjusted Gradle repository mode in {settings}")
+          PY
 
       - name: Add video library permissions
         run: |
