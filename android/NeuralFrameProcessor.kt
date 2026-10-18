@@ -3,13 +3,13 @@ package com.ptip.statushd
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Matrix
-import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.InterpreterApi
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /** Real ESPCN 3x frame/tile inference. The video bridge must call this for
  * each decoded tile and then composite the returned bitmap into the encoder. */
-class NeuralFrameProcessor(private val interpreter: Interpreter) {
+class NeuralFrameProcessor(private val interpreter: InterpreterApi) {
     companion object { const val TILE = 64; const val SCALE = 3; const val OUTPUT = 192 }
 
     fun upscale(tile: Bitmap): Bitmap {

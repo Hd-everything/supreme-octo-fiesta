@@ -2,14 +2,14 @@ package com.ptip.statushd
 
 import android.content.Context
 import android.graphics.Bitmap
-import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.InterpreterApi
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /** Loads and benchmarks the packaged ESPCN model. Video jobs must use this
  * same engine rather than treating a resize as neural restoration. */
 class SuperResolutionEngine(private val context: Context) : AutoCloseable {
-    private var interpreter: Interpreter? = null
+    private var interpreter: InterpreterApi? = null
 
     fun capability(): Map<String, Any> {
         return try {
@@ -34,10 +34,10 @@ class SuperResolutionEngine(private val context: Context) : AutoCloseable {
         return NeuralFrameProcessor(loadModel()).upscaleFrame(frame, outputWidth, outputHeight)
     }
 
-    private fun loadModel(): Interpreter {
+    private fun loadModel(): InterpreterApi {
         return interpreter ?: run {
             val bytes = context.assets.open("flutter_assets/assets/models/espcn_x3.tflite").use { it.readBytes() }
-            Interpreter(ByteBuffer.wrap(bytes), Interpreter.Options().apply { setNumThreads(2) }).also { interpreter = it }
+            InterpreterApi.create(ByteBuffer.wrap(bytes), InterpreterApi.Options().apply { setNumThreads(2) }).also { interpreter = it }
         }
     }
 
