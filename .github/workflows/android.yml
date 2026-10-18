@@ -53,32 +53,25 @@ jobs:
               if gradle.suffix == ".kts":
                   source += f"""
           {marker}
-          afterEvaluate {{
-              tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {{
-                  sourceCompatibility = "17"
-                  targetCompatibility = "17"
-                  options.release.set(17)
-              }}
-              tasks.matching {{ it.javaClass.name.contains("KotlinCompile") }}.configureEach {{
-                  val options = extensions.findByName("kotlinOptions")
-                  if (options != null) {{
-                      options.javaClass.methods.firstOrNull {{ it.name == "setJvmTarget" && it.parameterCount == 1 }}?.invoke(options, "17")
-                  }}
-              }}
+          tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {{
+              sourceCompatibility = "17"
+              targetCompatibility = "17"
+              options.release.set(17)
+          }}
+          tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {{
+              kotlinOptions.jvmTarget = "17"
           }}
           """
               else:
                   source += f"""
           {marker}
-          afterEvaluate {{
-              tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{
-                  sourceCompatibility = "17"
-                  targetCompatibility = "17"
-                  options.release.set(17)
-              }}
-              tasks.matching {{ it.class.name.contains("KotlinCompile") }}.configureEach {{ task ->
-                  try {{ task.kotlinOptions.jvmTarget = "17" }} catch (Exception ignored) {{}}
-              }}
+          tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{
+              sourceCompatibility = "17"
+              targetCompatibility = "17"
+              options.release.set(17)
+          }}
+          tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {{
+              kotlinOptions.jvmTarget = "17"
           }}
           """
               gradle.write_text(source)
