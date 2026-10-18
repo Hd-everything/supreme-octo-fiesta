@@ -250,7 +250,7 @@ jobs:
               if not match:
                   raise SystemExit("Android Gradle block not found")
               source = source[:match.end()] + "\n" + signing + source[match.end():]
-          match = re.search(r"(release\\s*\\{)(.*?)(\\n\\s*\\})", source, re.S)
+          match = re.search(r"(release\s*\{)(.*?)(\n\s*\})", source, re.S)
           if not match:
               raise SystemExit("Release build type not found")
           body = match.group(2)
