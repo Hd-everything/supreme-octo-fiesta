@@ -55,9 +55,9 @@ jobs:
                   if "org.jetbrains.kotlin.android" in line and "version" in line:
                       prefix = line[:line.index("version")]
                       if "id '" in line:
-                          lines[i] = prefix + "version '2.2.0' apply false"
+                          lines[i] = prefix + "version '2.2.20' apply false"
                       else:
-                          lines[i] = prefix + 'version "2.2.0" apply false'
+                          lines[i] = prefix + 'version "2.2.20" apply false'
               text = "\n".join(lines) + "\n"
               settings.write_text(text)
 
@@ -161,6 +161,9 @@ jobs:
                   continue
               gradle = candidates[-1]
               source = gradle.read_text()
+              if gradle.suffix == ".kts":
+                  source = source.replace('kotlinOptions.jvmTarget = "1.8"', 'compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)')
+                  source = source.replace('kotlinOptions.jvmTarget = "17"', 'compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)')
               marker = f"// StatusHD JVM target alignment for {package}"
               if marker in source:
                   continue
@@ -173,7 +176,7 @@ jobs:
               options.release.set(17)
           }}
           tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {{
-              kotlinOptions.jvmTarget = "17"
+              compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
           }}
           """
               else:
@@ -185,7 +188,7 @@ jobs:
               options.release.set(17)
           }}
           tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {{
-              kotlinOptions.jvmTarget = "17"
+              compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
           }}
           """
               gradle.write_text(source)
