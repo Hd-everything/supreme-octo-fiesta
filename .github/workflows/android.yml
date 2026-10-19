@@ -52,14 +52,15 @@ jobs:
                   source = source.replace('kotlinOptions.jvmTarget = "17"', 'compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)')
               marker = f"// StatusHD JVM target alignment for {package}"
               if marker in source:
-                  continue
+                  source = source.split(marker, 1)[0].rstrip() + "\n"
               if gradle.suffix == ".kts":
                   source += f"""
           {marker}
-          tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {{
-              sourceCompatibility = "17"
-              targetCompatibility = "17"
-              options.release.set(17)
+          android {{
+              compileOptions {{
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }}
           }}
           tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {{
               compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
@@ -68,10 +69,11 @@ jobs:
               else:
                   source += f"""
           {marker}
-          tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {{
-              sourceCompatibility = "17"
-              targetCompatibility = "17"
-              options.release.set(17)
+          android {{
+              compileOptions {{
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }}
           }}
           tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {{
               compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
