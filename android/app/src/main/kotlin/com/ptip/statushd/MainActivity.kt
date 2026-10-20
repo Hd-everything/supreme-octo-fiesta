@@ -109,6 +109,7 @@ class MainActivity : FlutterActivity() {
                 val inputPath = call.argument<String>("inputPath")
                 val outputPath = call.argument<String>("outputPath")
                 val operation = call.argument<String>("operation")
+                val reportProgress = call.argument<Boolean>("reportProgress") == true
                 if (inputPath.isNullOrBlank() || outputPath.isNullOrBlank() || !File(inputPath).isFile || (operation != "enhance" && operation != "crop")) {
                     result.error("invalid_arguments", "Choose a valid source and output configuration.", null)
                     return@setMethodCallHandler
@@ -172,6 +173,11 @@ class MainActivity : FlutterActivity() {
                 outputFile.delete()
                 val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(File(inputPath)))).setEffects(Effects(emptyList(), effects)).build()
                 val transformer = Transformer.Builder(this).setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object : Transformer.Listener {
+                    override fun onProgress(composition: androidx.media3.transformer.Composition, progressHolder: Transformer.ProgressHolder) {
+                        if (reportProgress && activeTransformer?.getProgress(progressHolder) == Transformer.PROGRESS_STATE_AVAILABLE) {
+                            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).invokeMethod("processingProgress", progressHolder.progress)
+                        }
+                    }
                     override fun onCompleted(composition: androidx.media3.transformer.Composition, exportResult: ExportResult) {
                         activeTransformer = null
                         if (outputFile.isFile && outputFile.length() > 0L) result.success(mapOf("path" to outputFile.absolutePath))
@@ -193,6 +199,7 @@ class MainActivity : FlutterActivity() {
                 val outputPath = call.argument<String>("outputPath")
                 val width = call.argument<Int>("outputWidth") ?: 0
                 val height = call.argument<Int>("outputHeight") ?: 0
+                val reportProgress = call.argument<Boolean>("reportProgress") == true
                 if (inputPath.isNullOrBlank() || outputPath.isNullOrBlank() || !File(inputPath).isFile || width < 2 || height < 2) {
                     result.error("invalid_neural_arguments", "Choose a valid source and neural output size.", null)
                     return@setMethodCallHandler
@@ -200,7 +207,11 @@ class MainActivity : FlutterActivity() {
                 Thread {
                     try {
                         val engine = superResolutionEngine ?: SuperResolutionEngine(this).also { superResolutionEngine = it }
-                        val output = NeuralVideoProcessor(engine).process(inputPath, outputPath, width, height)
+                        val output = NeuralVideoProcessor(engine).process(inputPath, outputPath, width, height) { progress ->
+                            if (reportProgress) runOnUiThread {
+                                MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).invokeMethod("processingProgress", (progress * 100).toInt())
+                            }
+                        }
                         runOnUiThread { result.success(mapOf("path" to output.absolutePath, "neural" to true, "scale" to 3)) }
                     } catch (error: Exception) {
                         runOnUiThread { result.error("neural_processing_failed", error.message ?: "Neural processing failed.", null) }

@@ -347,6 +347,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _neuralReady = false;
   String _neuralStatus = 'Checking neural runtime…';
   double _enhanceProgress = 0;
+  StreamSubscription<int>? _processingProgressSubscription;
   double _brightnessBoost = 0.09;
   double _contrastBoost = 0.20;
   double _saturationBoost = 14;
@@ -388,6 +389,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _processingProgressSubscription = _processing.progress.listen((percent) {
+      if (mounted && _exporting) setState(() => _enhanceProgress = percent / 100);
+    });
     unawaited(_jobs.load());
     unawaited(_initializeMobileAds().then((_) => _rewardedAds.preload()));
     unawaited(_loadNeuralCapability());
@@ -430,6 +434,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _processingProgressSubscription?.cancel();
     _jobs.dispose();
     _videoController?.dispose();
     _enhancedPreviewController?.dispose();
@@ -1153,7 +1158,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_exporting) ...[
           LinearProgressIndicator(value: _enhanceProgress > 0 ? _enhanceProgress : null),
           const SizedBox(height: 6),
-          Text(_enhanceProgress > 0 ? 'Encoding… ${(_enhanceProgress * 100).round()}%' : 'Applying picture filters and encoding on device…', style: const TextStyle(color: Colors.white60, fontSize: 11)),
+          Text('Processing… ${(_enhanceProgress * 100).round()}%', style: const TextStyle(color: Colors.white60, fontSize: 11)),
         ],
         SizedBox(
           width: double.infinity,

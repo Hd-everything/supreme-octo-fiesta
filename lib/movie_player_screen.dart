@@ -50,6 +50,8 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   Timer? _hideTimer;
   Timer? _resumeTimer;
   Timer? _sleepTimer;
+  StreamSubscription<int>? _processingProgressSubscription;
+  int _processingPercent = 0;
 
   Color get _accent => Theme.of(context).colorScheme.primary;
   bool get _watching => _showPlayerView && _path != null && _name != null;
@@ -59,6 +61,9 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   void initState() {
     super.initState();
     unawaited(_jobs.load());
+    _processingProgressSubscription = _processing.progress.listen((percent) {
+      if (mounted && _enhancing) setState(() => _processingPercent = percent);
+    });
     // Load libmpv only when the dedicated movie player is opened. Initializing
     // it before runApp can delay the first Flutter frame on slower devices.
     MediaKit.ensureInitialized();
@@ -76,6 +81,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   @override
   void dispose() {
+    _processingProgressSubscription?.cancel();
     _jobs.dispose();
     _hideTimer?.cancel();
     _resumeTimer?.cancel();
@@ -245,7 +251,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     final outW = _width >= _height ? _target : outShort;
     final outH = _width >= _height ? outShort : _target;
     final output = '${Directory.systemTemp.path}/movie_${outW}x${outH}_${DateTime.now().microsecondsSinceEpoch}.mp4';
-    setState(() { _enhancing = true; _status = 'Preparing a clearer ${_target}p copy…'; _error = null; });
+    setState(() { _enhancing = true; _processingPercent = 0; _status = 'Preparing a clearer ${_target}p copy…'; _error = null; });
     try {
       await _player.pause();
       final metadata = await _processing.inspect(source);
@@ -464,7 +470,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
           const SizedBox(width:10),
           Expanded(child:FilledButton.icon(onPressed:_enhancing||_width<2?null:_showEnhancementOptions,icon:_enhancing?const SizedBox(width:16,height:16,child:CircularProgressIndicator(strokeWidth:2)):const Icon(Icons.auto_awesome_rounded),label:Text(_enhancing?'Improving…':'Improve video'))),
         ]),
-        if(_enhancing) const Padding(padding:EdgeInsets.only(top:12),child:LinearProgressIndicator()),
+        if(_enhancing) Padding(padding:const EdgeInsets.only(top:12),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[LinearProgressIndicator(value:_processingPercent > 0 ? _processingPercent / 100 : null),const SizedBox(height:5),Text('Processing… $_processingPercent%',style:TextStyle(color:_accent,fontSize:11))])),
         if(_status!=null) Padding(padding:const EdgeInsets.only(top:8),child:Text(_status!,style:TextStyle(color:_accent,fontSize:12))),
         if(_error!=null) Padding(padding:const EdgeInsets.only(top:8),child:Text(_error!,style:TextStyle(color:Theme.of(context).colorScheme.error,fontSize:12))),
       ])),

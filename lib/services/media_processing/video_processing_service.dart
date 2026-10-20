@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/services.dart';
 
@@ -128,6 +129,21 @@ class VideoProcessingService {
   final SuperResolutionModelManager _superResolution;
   final ProcessingJobQueue? _jobs;
 
+  static final StreamController<int> _progressEvents = StreamController<int>.broadcast();
+  static bool _progressHandlerInstalled = false;
+
+  Stream<int> get progress => _progressEvents.stream;
+
+  void _installProgressHandler() {
+    if (_progressHandlerInstalled) return;
+    _progressHandlerInstalled = true;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'processingProgress' && call.arguments is num) {
+        _progressEvents.add((call.arguments as num).round().clamp(0, 100));
+      }
+    });
+  }
+
   /// Checks the packaged model and runs one real representative inference.
   /// The result is intentionally separate from conventional video processing;
   /// callers must not label a resize as neural restoration.
@@ -172,6 +188,7 @@ class VideoProcessingService {
   }
 
   Future<ProcessingResult> process(ProcessingRequest request) async {
+    _installProgressHandler();
     validate(request);
     final jobId = 'job_${DateTime.now().microsecondsSinceEpoch}';
     final job = ProcessingJob(id: jobId, inputPath: request.inputPath, outputPath: request.outputPath, operation: request.isEnhancement ? 'enhancement' : 'crop', createdAt: DateTime.now());
@@ -181,6 +198,7 @@ class VideoProcessingService {
       'inputPath': request.inputPath,
       'outputPath': request.outputPath,
       'operation': request.isEnhancement ? 'enhance' : 'crop',
+      'reportProgress': true,
     };
     if (request.enhancement case final config?) {
       final size = config.outputWidth != null && config.outputHeight != null
@@ -218,8 +236,9 @@ class VideoProcessingService {
   }
 
   Future<ProcessingResult> processNeural({required String inputPath, required String outputPath, required VideoMetadata metadata, required int outputWidth, required int outputHeight}) async {
+    _installProgressHandler();
     if (!metadata.isValid || !File(inputPath).existsSync()) throw const ProcessingValidationException('The source video is no longer available.');
-    final result = await _channel.invokeMapMethod<String, dynamic>('processNeuralVideo', {'inputPath': inputPath, 'outputPath': outputPath, 'outputWidth': outputWidth, 'outputHeight': outputHeight});
+    final result = await _channel.invokeMapMethod<String, dynamic>('processNeuralVideo', {'inputPath': inputPath, 'outputPath': outputPath, 'outputWidth': outputWidth, 'outputHeight': outputHeight, 'reportProgress': true});
     final path = result?['path']?.toString();
     if (path == null || !File(path).existsSync() || await File(path).length() == 0) throw const ProcessingValidationException('Neural processing did not create a readable output file.');
     return ProcessingResult(path: path, metadata: await inspect(path));
