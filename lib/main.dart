@@ -9,6 +9,8 @@ import 'movie_player_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
 import 'services/media_processing/processing_job_queue.dart';
 import 'services/media_processing/photo_processing_service.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'services/ads/rewarded_ad_service.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
@@ -31,6 +33,14 @@ enum StudioProcessingMode { conventional, neural }
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(StatusHdStartup(preferences: _loadStartupPreferences()));
+}
+
+Future<void> _initializeMobileAds() async {
+  try {
+    await MobileAds.instance.initialize();
+  } catch (error) {
+    debugPrint('Mobile Ads initialization failed: $error');
+  }
 }
 
 Future<SharedPreferences> _loadStartupPreferences() async {
@@ -313,6 +323,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final ProcessingJobQueue _jobs = ProcessingJobQueue();
   late final VideoProcessingService _processing = VideoProcessingService(jobs: _jobs);
   final PhotoProcessingService _photos = PhotoProcessingService();
+  final RewardedAdService _rewardedAds = RewardedAdService();
   XFile? _selected;
   bool _busy = false;
   String? _message;
@@ -330,7 +341,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _exportEstimateMessage;
   bool _cancelExportRequested = false;
   bool _showOriginalComparison = false;
-  bool _addWatermark = false;
+  bool _watermarkFreeUnlocked = false;
+  bool _adUnlocking = false;
   StudioProcessingMode _processingMode = StudioProcessingMode.conventional;
   bool _neuralReady = false;
   String _neuralStatus = 'Checking neural runtime…';
@@ -377,6 +389,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     unawaited(_jobs.load());
+    unawaited(_initializeMobileAds().then((_) => _rewardedAds.preload()));
     unawaited(_loadNeuralCapability());
     _loadRecentExports();
   }
@@ -603,7 +616,7 @@ class _HomeScreenState extends State<HomeScreen> {
               : OutputResolution.p1080;
       final processed = _processingMode == StudioProcessingMode.neural
           ? await _processing.processNeural(inputPath: file.path, outputPath: output, metadata: metadata, outputWidth: outputWidth, outputHeight: outputHeight)
-          : await _processing.process(ProcessingRequest.enhance(inputPath: file.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: _addWatermark)));
+          : await _processing.process(ProcessingRequest.enhance(inputPath: file.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: !_watermarkFreeUnlocked)));
       final processedPath = processed.path;
       if (_cancelExportRequested) {
         try { await File(processedPath).delete(); } catch (_) {}
@@ -1098,15 +1111,45 @@ class _HomeScreenState extends State<HomeScreen> {
         Text(_processingMode == StudioProcessingMode.neural ? 'Neural mode processes decoded frames with the validated model.' : _neuralStatus, style: const TextStyle(color: Colors.white54, fontSize: 11)),
         const SizedBox(height: 10),
         if (_processingMode == StudioProcessingMode.conventional)
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Add Status HD watermark'),
-            subtitle: Text(_addWatermark ? 'The exported video will include a visible watermark.' : 'Off. The exported video will not include a watermark.'),
-            value: _addWatermark,
-            onChanged: _exporting ? null : (value) => setState(() { _addWatermark = value; _enhancedVideo = null; }),
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: .08),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: accent.withValues(alpha: .2)),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(_watermarkFreeUnlocked ? Icons.verified_rounded : Icons.branding_watermark_outlined, color: accent),
+                const SizedBox(width: 10),
+                Expanded(child: Text(
+                  _watermarkFreeUnlocked
+                      ? 'Reward earned. New videos export without the Status HD watermark.'
+                      : 'New videos include a Status HD watermark. Watch a rewarded ad before processing to remove it.',
+                  style: const TextStyle(color: Colors.white70, fontSize: 11, height: 1.35),
+                )),
+              ]),
+              if (!_watermarkFreeUnlocked) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _adUnlocking || _exporting ? null : _unlockWatermarkFreeExport,
+                    icon: _adUnlocking
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.play_circle_outline_rounded),
+                    label: Text(_adUnlocking ? 'Loading rewarded ad…' : 'Watch ad to remove watermark'),
+                  ),
+                ),
+              ],
+            ]),
           )
         else
-          const Text('Neural mode does not add a watermark.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          const Padding(
+            padding: EdgeInsets.only(top: 10),
+            child: Text('Neural mode does not add a watermark.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          ),
         if (_exporting) ...[
           LinearProgressIndicator(value: _enhanceProgress > 0 ? _enhanceProgress : null),
           const SizedBox(height: 6),
@@ -1476,6 +1519,26 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   bool _isPhotoOutput(XFile file) => file.path.toLowerCase().endsWith('.jpg') || file.path.toLowerCase().endsWith('.jpeg') || file.path.toLowerCase().endsWith('.png');
+
+  Future<void> _unlockWatermarkFreeExport() async {
+    if (_watermarkFreeUnlocked || _adUnlocking) return;
+    setState(() { _adUnlocking = true; _message = 'Loading the rewarded ad…'; });
+    try {
+      final unlocked = await _rewardedAds.showFor1080p();
+      if (!mounted) return;
+      setState(() {
+        _watermarkFreeUnlocked = unlocked;
+        _enhancedVideo = null;
+        _message = unlocked
+            ? 'Reward earned. Process the video again to create a watermark-free copy.'
+            : 'No rewarded ad was available or completed. You can still process and share a watermarked video.';
+      });
+    } catch (error) {
+      if (mounted) setState(() => _message = 'The rewarded ad could not be shown. You can still process a watermarked video.');
+    } finally {
+      if (mounted) setState(() => _adUnlocking = false);
+    }
+  }
 
   Future<void> _enhancePhoto(XFile file) async {
     if (_exporting || _busy) return;
