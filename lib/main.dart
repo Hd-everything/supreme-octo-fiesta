@@ -350,6 +350,7 @@ class _HomeScreenState extends State<HomeScreen> {
   double _brightnessBoost = 0.09;
   double _contrastBoost = 0.18;
   double _saturationBoost = 14;
+  double _sharpnessBoost = 0.22;
   XFile? _enhancedVideo;
   List<Map<String, String>> _recentExports = <Map<String, String>>[];
 
@@ -481,6 +482,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _segments = [];
         _sourceResolution = null;
         _qualityRecommendation = null;
+        _targetLongEdge = -1;
         _enhancedVideo = null;
         _enhanceProgress = 0;
         _exportEstimateMessage = null;
@@ -506,7 +508,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _qualityRecommendation = shortEdge < 720
               ? 'Low-resolution video detected. Status HD can apply conventional enhancement and upscale it, but larger dimensions do not recreate missing detail.'
               : 'Choose an output size for conventional enhancement. The new copy adjusts picture tone and sharpness while leaving your original untouched.';
-          // Auto selects at least 1080p; explicit choices include 480p through 1440p.
+          // Auto selects at least 1080p; output size can be changed below the preview.
           _targetLongEdge = -1;
           _exportEstimateMessage = _estimateExportSize();
         });
@@ -592,7 +594,7 @@ class _HomeScreenState extends State<HomeScreen> {
               : OutputResolution.p1080;
       final processed = _processingMode == StudioProcessingMode.neural
           ? await _processing.processNeural(inputPath: file.path, outputPath: output, metadata: metadata, outputWidth: outputWidth, outputHeight: outputHeight)
-          : await _processing.process(ProcessingRequest.enhance(inputPath: file.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: !_watermarkFreeUnlocked)));
+          : await _processing.process(ProcessingRequest.enhance(inputPath: file.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: !_watermarkFreeUnlocked)));
       final processedPath = processed.path;
       if (_cancelExportRequested) {
         try { await File(processedPath).delete(); } catch (_) {}
@@ -981,6 +983,71 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _outputAndQualityControls(Color accent) => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(widget.rounded ? 18 : 10),
+          border: Border.all(color: accent.withValues(alpha: .25)),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('OUTPUT SIZE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
+          const SizedBox(height: 4),
+          const Text('Choose the resolution for your processed copy.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final option in const <(int, String)>[
+                (-1, 'Auto'),
+                (640, '360p'),
+                (854, '480p'),
+                (1280, '720p'),
+                (1920, '1080p'),
+                (2560, '1440p'),
+              ])
+                ChoiceChip(
+                  label: Text(option.$2),
+                  selected: _targetLongEdge == option.$1,
+                  onSelected: _exporting
+                      ? null
+                      : (_) => setState(() {
+                            _targetLongEdge = option.$1;
+                            _enhancedVideo = null;
+                            _exportEstimateMessage = _estimateExportSize();
+                          }),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Text('PICTURE ADJUSTMENTS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
+          const SizedBox(height: 4),
+          const Text('These adjustments change the exported pixels.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          const SizedBox(height: 8),
+          _adjustmentSlider(
+            label: 'Brightness', value: _brightnessBoost, min: -0.10, max: 0.20,
+            divisions: 30, display: '${(_brightnessBoost * 100).round()}%',
+            onChanged: (value) => setState(() { _brightnessBoost = value; _enhancedVideo = null; }),
+          ),
+          _adjustmentSlider(
+            label: 'Clarity (contrast)', value: _contrastBoost, min: -0.20, max: 0.30,
+            divisions: 25, display: '${(_contrastBoost * 100).round()}%',
+            onChanged: (value) => setState(() { _contrastBoost = value; _enhancedVideo = null; }),
+          ),
+          _adjustmentSlider(
+            label: 'Color', value: _saturationBoost, min: -20, max: 30,
+            divisions: 25, display: '${_saturationBoost.round()}',
+            onChanged: (value) => setState(() { _saturationBoost = value; _enhancedVideo = null; }),
+          ),
+          _adjustmentSlider(
+            label: 'Sharpness', value: _sharpnessBoost, min: 0, max: 0.5,
+            divisions: 50, display: '${(_sharpnessBoost * 100).round()}%',
+            onChanged: (value) => setState(() { _sharpnessBoost = value; _enhancedVideo = null; }),
+          ),
+        ]),
+      );
+
   Widget _qualityInfo(Color accent) {
     final resolution = _sourceResolution;
     if (resolution == null || _qualityRecommendation == null) return const SizedBox.shrink();
@@ -1017,50 +1084,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         const SizedBox(height: 5),
         Text(_processingMode == StudioProcessingMode.neural ? 'Neural mode processes decoded frames with the validated model.' : _neuralStatus, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-        const SizedBox(height: 14),
-        const Text('OUTPUT SIZE (ENCODED)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
-        const SizedBox(height: 8),
-        SegmentedButton<int>(
-          segments: const [
-            ButtonSegment(value: -1, label: Text('Auto')),
-            ButtonSegment(value: 640, label: Text('360p')),
-            ButtonSegment(value: 854, label: Text('480p')),
-            ButtonSegment(value: 1280, label: Text('720p')),
-            ButtonSegment(value: 1920, label: Text('1080p')),
-            ButtonSegment(value: 2560, label: Text('1440p')),
-          ],
-          selected: {_targetLongEdge},
-          onSelectionChanged: _exporting ? null : (values) => setState(() { _targetLongEdge = values.first; _enhancedVideo = null; _exportEstimateMessage = _estimateExportSize(); }),
-          showSelectedIcon: false,
-        ),
-        const SizedBox(height: 12),
-        _adjustmentSlider(
-          label: 'Brightness',
-          value: _brightnessBoost,
-          min: -0.10,
-          max: 0.20,
-          divisions: 30,
-          display: '${(_brightnessBoost * 100).round()}%',
-          onChanged: (value) => setState(() { _brightnessBoost = value; _enhancedVideo = null; }),
-        ),
-        _adjustmentSlider(
-          label: 'Contrast',
-          value: _contrastBoost,
-          min: -0.20,
-          max: 0.30,
-          divisions: 25,
-          display: '${(_contrastBoost * 100).round()}%',
-          onChanged: (value) => setState(() { _contrastBoost = value; _enhancedVideo = null; }),
-        ),
-        _adjustmentSlider(
-          label: 'Color',
-          value: _saturationBoost,
-          min: -20,
-          max: 30,
-          divisions: 25,
-          display: '${_saturationBoost.round()}',
-          onChanged: (value) => setState(() { _saturationBoost = value; _enhancedVideo = null; }),
-        ),
         const SizedBox(height: 10),
         if (_exporting) ...[
           LinearProgressIndicator(value: _enhanceProgress > 0 ? _enhanceProgress : null),
@@ -1353,7 +1376,13 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 12),
 
               const SizedBox(height: 22),
-              if (_selected == null) _emptyPicker(accent) else _mediaPreview(accent),
+              if (_selected == null)
+                _emptyPicker(accent)
+              else ...[
+                _outputAndQualityControls(accent),
+                const SizedBox(height: 14),
+                _mediaPreview(accent),
+              ],
               if (_selected != null && _isVideo) ...[
                 const SizedBox(height: 14),
                 _whatsAppStatusPreset(accent),
@@ -1420,7 +1449,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() { _exporting = true; _message = 'Preparing enhanced photo…'; _enhancedVideo = null; });
     try {
       final output = '${Directory.systemTemp.path}/statushd_photo_${DateTime.now().microsecondsSinceEpoch}.jpg';
-      final result = await _photos.process(inputPath: file.path, outputPath: output, targetLongEdge: _targetLongEdge > 0 ? _targetLongEdge : null, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost);
+      final result = await _photos.process(inputPath: file.path, outputPath: output, targetLongEdge: _targetLongEdge > 0 ? _targetLongEdge : null, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost);
       if (!mounted) return;
       setState(() { _enhancedVideo = XFile(result.path, mimeType: 'image/jpeg'); _message = 'Enhanced photo ready: ${result.width}×${result.height} · ${_formatBytes(result.bytes)}. Save or share the new copy.'; _enhanceProgress = 1; });
       unawaited(_recordExports([XFile(result.path, mimeType: 'image/jpeg')], 'Enhanced photo'));
