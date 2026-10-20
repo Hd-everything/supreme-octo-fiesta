@@ -598,14 +598,6 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     final presetLabel = _targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 2560 ? '1440p' : '1080p';
-    if (targetLongEdge == 1920) {
-      setState(() => _message = 'Watch a short rewarded ad to unlock 1080p processing.');
-      final rewarded = await _rewardedAds.showFor1080p();
-      if (!rewarded) {
-        if (mounted) setState(() => _message = '1080p unlock was not completed. Choose another output size or try again.');
-        return;
-      }
-    }
     setState(() {
       _exporting = true;
       _cancelExportRequested = false;
