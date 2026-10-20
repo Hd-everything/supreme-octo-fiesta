@@ -35,8 +35,16 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   final preferences = await SharedPreferences.getInstance();
-  await MobileAds.instance.initialize();
   runApp(StatusHdApp(preferences: preferences));
+  unawaited(_initializeMobileAds());
+}
+
+Future<void> _initializeMobileAds() async {
+  try {
+    await MobileAds.instance.initialize();
+  } catch (error) {
+    debugPrint('Mobile Ads initialization failed: $error');
+  }
 }
 
 class StatusHdApp extends StatefulWidget {
