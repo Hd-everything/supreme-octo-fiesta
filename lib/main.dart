@@ -361,6 +361,9 @@ class _HomeScreenState extends State<HomeScreen> {
         name.endsWith('.3gp') || name.endsWith('.mkv');
   }
 
+  bool get _canApplyPictureAdjustments =>
+      !_isVideo || _processingMode == StudioProcessingMode.conventional;
+
   @override
   void initState() {
     super.initState();
@@ -958,7 +961,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required double max,
     required int divisions,
     required String display,
-    required ValueChanged<double> onChanged,
+    required ValueChanged<double>? onChanged,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
@@ -1023,27 +1026,32 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 14),
           const Text('PICTURE ADJUSTMENTS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
           const SizedBox(height: 4),
-          const Text('These adjustments change the exported pixels.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          Text(
+            _canApplyPictureAdjustments
+                ? 'Clarity and sharpness change the exported pixels.'
+                : 'Switch to Conventional mode to apply these picture adjustments.',
+            style: const TextStyle(color: Colors.white54, fontSize: 11),
+          ),
           const SizedBox(height: 8),
           _adjustmentSlider(
             label: 'Brightness', value: _brightnessBoost, min: -0.10, max: 0.20,
             divisions: 30, display: '${(_brightnessBoost * 100).round()}%',
-            onChanged: (value) => setState(() { _brightnessBoost = value; _enhancedVideo = null; }),
+            onChanged: _canApplyPictureAdjustments ? (value) => setState(() { _brightnessBoost = value; _enhancedVideo = null; }) : null,
           ),
           _adjustmentSlider(
             label: 'Clarity (contrast)', value: _contrastBoost, min: -0.20, max: 0.30,
             divisions: 25, display: '${(_contrastBoost * 100).round()}%',
-            onChanged: (value) => setState(() { _contrastBoost = value; _enhancedVideo = null; }),
+            onChanged: _canApplyPictureAdjustments ? (value) => setState(() { _contrastBoost = value; _enhancedVideo = null; }) : null,
           ),
           _adjustmentSlider(
             label: 'Color', value: _saturationBoost, min: -20, max: 30,
             divisions: 25, display: '${_saturationBoost.round()}',
-            onChanged: (value) => setState(() { _saturationBoost = value; _enhancedVideo = null; }),
+            onChanged: _canApplyPictureAdjustments ? (value) => setState(() { _saturationBoost = value; _enhancedVideo = null; }) : null,
           ),
           _adjustmentSlider(
             label: 'Sharpness', value: _sharpnessBoost, min: 0, max: 0.5,
             divisions: 50, display: '${(_sharpnessBoost * 100).round()}%',
-            onChanged: (value) => setState(() { _sharpnessBoost = value; _enhancedVideo = null; }),
+            onChanged: _canApplyPictureAdjustments ? (value) => setState(() { _sharpnessBoost = value; _enhancedVideo = null; }) : null,
           ),
         ]),
       );
