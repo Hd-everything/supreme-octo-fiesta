@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 
 import 'package:flutter/material.dart';
-import 'package:media_kit/media_kit.dart';
 import 'media_manager_screen.dart';
 import 'movie_player_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
@@ -33,7 +32,6 @@ enum StudioProcessingMode { conventional, neural }
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
   runApp(StatusHdStartup(preferences: SharedPreferences.getInstance()));
   unawaited(_initializeMobileAds());
 }

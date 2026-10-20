@@ -59,6 +59,9 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   void initState() {
     super.initState();
     unawaited(_jobs.load());
+    // Load libmpv only when the dedicated movie player is opened. Initializing
+    // it before runApp can delay the first Flutter frame on slower devices.
+    MediaKit.ensureInitialized();
     _player = Player();
     _video = VideoController(_player);
     _resumeTimer = Timer.periodic(const Duration(seconds: 5), (_) => _persistResume());
