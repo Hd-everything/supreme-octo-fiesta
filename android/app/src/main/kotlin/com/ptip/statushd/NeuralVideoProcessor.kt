@@ -12,15 +12,17 @@ class NeuralVideoProcessor(private val engine: SuperResolutionEngine) {
         val fps = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toDoubleOrNull()?.toInt()?.coerceIn(1, 120) ?: 30
         retriever.release()
         val silent = File.createTempFile("statushd_neural_", ".mp4")
-        val encoder = NeuralVideoEncoder(silent, outputWidth, outputHeight, fps)
         try {
-            NeuralVideoFrameLoop(engine).process(inputPath, outputWidth, outputHeight, { frame ->
-                encoder.encode(frame.bitmap, frame.timestampUs)
-            }, { position, duration -> if (duration > 0) onProgress((position.toDouble() / duration).coerceIn(0.0, 1.0)) })
-            encoder.finish()
-        } finally { encoder.close() }
-        NeuralAudioMuxer.mux(silent.absolutePath, inputPath, outputPath)
-        silent.delete()
+            NeuralVideoEncoder(silent, outputWidth, outputHeight, fps).use { encoder ->
+                NeuralVideoFrameLoop(engine).process(inputPath, outputWidth, outputHeight, { frame ->
+                    encoder.encode(frame.bitmap, frame.timestampUs)
+                }, { position, duration -> if (duration > 0) onProgress((position.toDouble() / duration).coerceIn(0.0, 1.0)) })
+                encoder.finish()
+            }
+            NeuralAudioMuxer.mux(silent.absolutePath, inputPath, outputPath)
+        } finally {
+            silent.delete()
+        }
         return File(outputPath)
     }
 }

@@ -18,7 +18,17 @@ class OutputHistory {
 
   Future<List<OutputHistoryEntry>> load() async {
     final prefs = await SharedPreferences.getInstance();
-    final entries = (prefs.getStringList(_key) ?? const <String>[]).map((raw) => OutputHistoryEntry.fromJson(jsonDecode(raw) as Map<String, dynamic>)).where((entry) => File(entry.path).existsSync()).toList();
+    final entries = <OutputHistoryEntry>[];
+    for (final raw in prefs.getStringList(_key) ?? const <String>[]) {
+      try {
+        final entry = OutputHistoryEntry.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+        if (entry.path.isNotEmpty && File(entry.path).existsSync()) entries.add(entry);
+      } on FormatException {
+        // Discard malformed history rows and retain the rest of the library.
+      } on TypeError {
+        // A row with an unexpected JSON shape is also safe to discard.
+      }
+    }
     await _save(prefs, entries);
     return entries;
   }

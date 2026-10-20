@@ -46,7 +46,13 @@ object NeuralAudioMuxer {
 
     private fun copyTrack(extractor: MediaExtractor, track: Int, outputTrack: Int, muxer: MediaMuxer) {
         extractor.selectTrack(track)
-        val buffer = ByteBuffer.allocate(1024 * 1024)
+        val format = extractor.getTrackFormat(track)
+        val maxSampleSize = if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+            format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+        } else {
+            0
+        }
+        val buffer = ByteBuffer.allocate(maxOf(4 * 1024 * 1024, maxSampleSize))
         val info = android.media.MediaCodec.BufferInfo()
         while (true) {
             buffer.clear()

@@ -41,9 +41,16 @@ class ProcessingJobQueue extends ChangeNotifier {
 
   Future<void> load() async {
     _preferences ??= await SharedPreferences.getInstance();
-    _jobs
-      ..clear()
-      ..addAll((_preferences!.getStringList(_key) ?? const <String>[]).map((raw) => ProcessingJob.fromJson(jsonDecode(raw) as Map<String, dynamic>)));
+    _jobs.clear();
+    for (final raw in _preferences!.getStringList(_key) ?? const <String>[]) {
+      try {
+        _jobs.add(ProcessingJob.fromJson(jsonDecode(raw) as Map<String, dynamic>));
+      } on FormatException {
+        // Ignore one damaged persisted row so other jobs remain available.
+      } on TypeError {
+        // Ignore rows whose stored JSON no longer matches the job schema.
+      }
+    }
     for (final job in _jobs.where((job) => !job.terminal)) {
       job.state = ProcessingJobState.paused;
       job.message = 'Recovered after the app closed. Resume when ready.';
@@ -57,7 +64,7 @@ class ProcessingJobQueue extends ChangeNotifier {
   Future<void> update(String id, {ProcessingJobState? state, double? progress, String? message, String? error}) async {
     final job = _jobs.firstWhere((item) => item.id == id);
     if (state != null) job.state = state;
-    if (progress != null) job.progress = progress.clamp(0, 1);
+    if (progress != null) job.progress = progress.clamp(0, 1).toDouble();
     if (message != null) job.message = message;
     if (error != null) job.error = error;
     await _persist(); notifyListeners();

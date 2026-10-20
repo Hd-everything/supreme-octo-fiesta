@@ -16,6 +16,7 @@ class NeuralVideoEncoder(private val output: File, private val width: Int, priva
     private val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     private var track = -1
     private var started = false
+    private var codecStarted = false
     private val info = MediaCodec.BufferInfo()
 
     init {
@@ -25,42 +26,69 @@ class NeuralVideoEncoder(private val output: File, private val width: Int, priva
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
         }
+        require(width >= 2 && height >= 2 && width % 2 == 0 && height % 2 == 0) {
+            "Neural video output dimensions must be positive even values."
+        }
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         codec.start()
+        codecStarted = true
     }
 
     fun encode(bitmap: Bitmap, presentationTimeUs: Long) {
-        val index = codec.dequeueInputBuffer(10_000)
-        require(index >= 0) { "Video encoder input is busy." }
+        var index = codec.dequeueInputBuffer(10_000)
+        while (index < 0) {
+            drain(false)
+            index = codec.dequeueInputBuffer(10_000)
+        }
         val input = codec.getInputBuffer(index) ?: error("Encoder input buffer unavailable.")
         input.clear()
-        input.put(toNv12(bitmap, width, height))
+        val frame = toNv12(bitmap, width, height)
+        require(frame.size <= input.remaining()) { "The video frame exceeds the encoder input buffer." }
+        input.put(frame)
         codec.queueInputBuffer(index, 0, input.position(), presentationTimeUs, 0)
         drain(false)
     }
 
     fun finish() {
-        val index = codec.dequeueInputBuffer(10_000)
-        if (index >= 0) codec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-        drain(true)
+        var index = codec.dequeueInputBuffer(10_000)
+        while (index < 0) {
+            drain(false)
+            index = codec.dequeueInputBuffer(10_000)
+        }
+        codec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+        drainUntilEnd()
     }
 
-    private fun drain(end: Boolean) {
+    private fun drainUntilEnd() {
+        val deadline = System.nanoTime() + 60_000_000_000L
+        while (System.nanoTime() < deadline) {
+            if (drain(true)) return
+        }
+        throw IllegalStateException("The video encoder did not finish the output stream.")
+    }
+
+    private fun drain(end: Boolean): Boolean {
         while (true) {
             when (val index = codec.dequeueOutputBuffer(info, if (end) 10_000 else 0)) {
-                MediaCodec.INFO_TRY_AGAIN_LATER -> if (!end) return else continue
+                MediaCodec.INFO_TRY_AGAIN_LATER -> if (!end) return false else return false
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> { track = muxer.addTrack(codec.outputFormat); muxer.start(); started = true }
                 else -> if (index >= 0) {
                     val data = codec.getOutputBuffer(index)
                     if (data != null && info.size > 0 && started) { data.position(info.offset); data.limit(info.offset + info.size); muxer.writeSampleData(track, data, info) }
+                    val reachedEnd = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
                     codec.releaseOutputBuffer(index, false)
-                    if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) return
+                    if (reachedEnd) return true
                 }
             }
         }
     }
 
-    override fun close() { try { if (started) muxer.stop() } catch (_: Exception) {}; muxer.release(); codec.stop(); codec.release() }
+    override fun close() {
+        try { if (started) muxer.stop() } catch (_: Exception) {}
+        try { muxer.release() } catch (_: Exception) {}
+        if (codecStarted) try { codec.stop() } catch (_: Exception) {}
+        try { codec.release() } catch (_: Exception) {}
+    }
 
     private fun toNv12(bitmap: Bitmap, targetWidth: Int, targetHeight: Int): ByteArray {
         val frame = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)

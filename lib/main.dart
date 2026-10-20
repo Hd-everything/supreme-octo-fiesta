@@ -31,12 +31,62 @@ const _recentExportsKey = 'recent_status_exports_v1';
 
 enum StudioProcessingMode { conventional, neural }
 
-Future<void> main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-  final preferences = await SharedPreferences.getInstance();
-  runApp(StatusHdApp(preferences: preferences));
+  runApp(StatusHdStartup(preferences: SharedPreferences.getInstance()));
   unawaited(_initializeMobileAds());
+}
+
+class StatusHdStartup extends StatefulWidget {
+  const StatusHdStartup({super.key, required this.preferences});
+
+  final Future<SharedPreferences> preferences;
+
+  @override
+  State<StatusHdStartup> createState() => _StatusHdStartupState();
+}
+
+class _StatusHdStartupState extends State<StatusHdStartup> {
+  late Future<SharedPreferences> _preferences = widget.preferences;
+
+  void _retry() => setState(() => _preferences = SharedPreferences.getInstance());
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<SharedPreferences>(
+        future: _preferences,
+        builder: (context, snapshot) {
+          if (snapshot.hasData) {
+            return StatusHdApp(preferences: snapshot.data!);
+          }
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: ThemeData.dark(useMaterial3: true),
+            home: Scaffold(
+              backgroundColor: const Color(0xFF090B10),
+              body: Center(
+                child: snapshot.hasError
+                    ? Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Status HD could not load app settings.'),
+                          const SizedBox(height: 12),
+                          FilledButton(onPressed: _retry, child: const Text('Try again')),
+                        ],
+                      )
+                    : const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 16),
+                          Text('Starting Status HD…'),
+                        ],
+                      ),
+              ),
+            ),
+          );
+        },
+      );
 }
 
 Future<void> _initializeMobileAds() async {
@@ -314,7 +364,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       setState(() {
         _neuralReady = result['ready'] == true && result['videoPipeline'] == true;
-        _neuralStatus = result['ready'] == true ? 'Model benchmark passed; decoded-frame export bridge is not enabled yet' : 'Neural video export unavailable on this runtime';
+        _neuralStatus = _neuralReady
+            ? 'Neural video processing is ready.'
+            : 'Neural video export unavailable on this runtime';
       });
     } catch (_) {
       if (mounted) setState(() => _neuralStatus = 'Neural video export unavailable on this runtime');
@@ -486,12 +538,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     final sourceLongEdge = sourceWidth > sourceHeight ? sourceWidth : sourceHeight;
     final sourceShortEdge = sourceWidth < sourceHeight ? sourceWidth : sourceHeight;
-    final targetLongEdge = _targetLongEdge == 0
+    final requestedLongEdge = _targetLongEdge == 0
         ? sourceLongEdge
         : _targetLongEdge == -1
             ? (sourceLongEdge < 1920 ? 1920 : sourceLongEdge)
             : _targetLongEdge;
-    final targetShortEdge = (sourceShortEdge * targetLongEdge / sourceLongEdge).round();
+    final boundedLongEdge = requestedLongEdge.clamp(2, 4096).toInt();
+    final targetLongEdge = boundedLongEdge.isEven ? boundedLongEdge : boundedLongEdge - 1;
+    final requestedShortEdge = (sourceShortEdge * targetLongEdge / sourceLongEdge).round();
+    final boundedShortEdge = requestedShortEdge.clamp(2, 4096).toInt();
+    final targetShortEdge = boundedShortEdge.isEven ? boundedShortEdge : boundedShortEdge + 1;
     final outputWidth = sourceWidth >= sourceHeight ? targetLongEdge : targetShortEdge;
     final outputHeight = sourceWidth >= sourceHeight ? targetShortEdge : targetLongEdge;
     if (_targetLongEdge == 0) {

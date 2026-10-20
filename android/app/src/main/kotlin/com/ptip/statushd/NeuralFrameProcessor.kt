@@ -2,10 +2,7 @@ package com.ptip.statushd
 
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.Matrix
 import org.tensorflow.lite.InterpreterApi
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /** Real ESPCN 3x frame/tile inference. The video bridge must call this for
  * each decoded tile and then composite the returned bitmap into the encoder. */
@@ -38,6 +35,8 @@ class NeuralFrameProcessor(private val interpreter: InterpreterApi) {
         val scaled = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(scaled)
         val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+        val scaleX = outputWidth.toFloat() / (frame.width * SCALE)
+        val scaleY = outputHeight.toFloat() / (frame.height * SCALE)
         val tileCountX = (frame.width + TILE - 1) / TILE
         val tileCountY = (frame.height + TILE - 1) / TILE
         for (tileY in 0 until tileCountY) for (tileX in 0 until tileCountX) {
@@ -47,7 +46,13 @@ class NeuralFrameProcessor(private val interpreter: InterpreterApi) {
             val height = minOf(TILE, frame.height - top)
             val tile = Bitmap.createBitmap(frame, left, top, width, height)
             val result = upscale(tile)
-            canvas.drawBitmap(result, null, android.graphics.Rect(left * SCALE, top * SCALE, (left + width) * SCALE, (top + height) * SCALE), paint)
+            val destination = android.graphics.RectF(
+                left * SCALE * scaleX,
+                top * SCALE * scaleY,
+                minOf((left + width) * SCALE * scaleX, outputWidth.toFloat()),
+                minOf((top + height) * SCALE * scaleY, outputHeight.toFloat()),
+            )
+            canvas.drawBitmap(result, null, destination, paint)
             tile.recycle()
             result.recycle()
         }

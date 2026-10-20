@@ -70,11 +70,16 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
             if (call.method == "neuralSuperResolutionCapability") {
-                try {
-                    result.success((superResolutionEngine ?: SuperResolutionEngine(this).also { superResolutionEngine = it }).capability())
-                } catch (error: Exception) {
-                    result.success(mapOf("ready" to false, "reason" to (error.message ?: "model_initialization_failed")))
-                }
+                Thread {
+                    val capability = try {
+                        (superResolutionEngine ?: synchronized(this) {
+                            superResolutionEngine ?: SuperResolutionEngine(this).also { superResolutionEngine = it }
+                        }).capability()
+                    } catch (error: Exception) {
+                        mapOf("ready" to false, "reason" to (error.message ?: "model_initialization_failed"))
+                    }
+                    runOnUiThread { result.success(capability) }
+                }.start()
                 return@setMethodCallHandler
             }
             if (call.method == "inspectVideo") {
