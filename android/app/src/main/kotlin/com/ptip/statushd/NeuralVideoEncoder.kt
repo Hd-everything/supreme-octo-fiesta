@@ -35,11 +35,7 @@ class NeuralVideoEncoder(private val output: File, private val width: Int, priva
     }
 
     fun encode(bitmap: Bitmap, presentationTimeUs: Long) {
-        var index = codec.dequeueInputBuffer(10_000)
-        while (index < 0) {
-            drain(false)
-            index = codec.dequeueInputBuffer(10_000)
-        }
+        val index = dequeueInputBuffer()
         val input = codec.getInputBuffer(index) ?: error("Encoder input buffer unavailable.")
         input.clear()
         val frame = toNv12(bitmap, width, height)
@@ -50,13 +46,19 @@ class NeuralVideoEncoder(private val output: File, private val width: Int, priva
     }
 
     fun finish() {
-        var index = codec.dequeueInputBuffer(10_000)
-        while (index < 0) {
-            drain(false)
-            index = codec.dequeueInputBuffer(10_000)
-        }
+        val index = dequeueInputBuffer()
         codec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
         drainUntilEnd()
+    }
+
+    private fun dequeueInputBuffer(): Int {
+        val deadline = System.nanoTime() + 60_000_000_000L
+        while (System.nanoTime() < deadline) {
+            val index = codec.dequeueInputBuffer(10_000)
+            if (index >= 0) return index
+            drain(false)
+        }
+        throw IllegalStateException("The video encoder did not accept another frame.")
     }
 
     private fun drainUntilEnd() {
