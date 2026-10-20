@@ -32,8 +32,21 @@ enum StudioProcessingMode { conventional, neural }
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(StatusHdStartup(preferences: SharedPreferences.getInstance()));
+  runApp(StatusHdStartup(preferences: _loadStartupPreferences()));
   unawaited(_initializeMobileAds());
+}
+
+Future<SharedPreferences> _loadStartupPreferences() async {
+  try {
+    return await SharedPreferences.getInstance();
+  } catch (error, stackTrace) {
+    debugPrint('Status HD could not load saved settings; using temporary settings: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    // A preferences plugin failure should not prevent the media tools from
+    // opening. The in-memory store keeps this session usable until restart.
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    return SharedPreferences.getInstance();
+  }
 }
 
 class StatusHdStartup extends StatefulWidget {
