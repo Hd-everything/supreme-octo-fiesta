@@ -9,8 +9,6 @@ import 'movie_player_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
 import 'services/media_processing/processing_job_queue.dart';
 import 'services/media_processing/photo_processing_service.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'services/ads/rewarded_ad_service.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
@@ -33,7 +31,6 @@ enum StudioProcessingMode { conventional, neural }
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(StatusHdStartup(preferences: _loadStartupPreferences()));
-  unawaited(_initializeMobileAds());
 }
 
 Future<SharedPreferences> _loadStartupPreferences() async {
@@ -98,14 +95,6 @@ class _StatusHdStartupState extends State<StatusHdStartup> {
           );
         },
       );
-}
-
-Future<void> _initializeMobileAds() async {
-  try {
-    await MobileAds.instance.initialize();
-  } catch (error) {
-    debugPrint('Mobile Ads initialization failed: $error');
-  }
 }
 
 class StatusHdApp extends StatefulWidget {
@@ -324,7 +313,6 @@ class _HomeScreenState extends State<HomeScreen> {
   final ProcessingJobQueue _jobs = ProcessingJobQueue();
   late final VideoProcessingService _processing = VideoProcessingService(jobs: _jobs);
   final PhotoProcessingService _photos = PhotoProcessingService();
-  final RewardedAdService _rewardedAds = RewardedAdService();
   XFile? _selected;
   bool _busy = false;
   String? _message;
@@ -342,7 +330,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _exportEstimateMessage;
   bool _cancelExportRequested = false;
   bool _showOriginalComparison = false;
-  bool _watermarkFreeUnlocked = false;
+  bool _addWatermark = false;
   StudioProcessingMode _processingMode = StudioProcessingMode.conventional;
   bool _neuralReady = false;
   String _neuralStatus = 'Checking neural runtime…';
@@ -389,7 +377,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     unawaited(_jobs.load());
-    _rewardedAds.preload();
     unawaited(_loadNeuralCapability());
     _loadRecentExports();
   }
@@ -616,7 +603,7 @@ class _HomeScreenState extends State<HomeScreen> {
               : OutputResolution.p1080;
       final processed = _processingMode == StudioProcessingMode.neural
           ? await _processing.processNeural(inputPath: file.path, outputPath: output, metadata: metadata, outputWidth: outputWidth, outputHeight: outputHeight)
-          : await _processing.process(ProcessingRequest.enhance(inputPath: file.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: !_watermarkFreeUnlocked)));
+          : await _processing.process(ProcessingRequest.enhance(inputPath: file.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: _addWatermark)));
       final processedPath = processed.path;
       if (_cancelExportRequested) {
         try { await File(processedPath).delete(); } catch (_) {}
@@ -725,7 +712,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final file = _enhancedVideo;
     if (file == null || _busy || _exporting) return;
     final isPhoto = _isPhotoOutput(file);
-    if (!isPhoto && !await _unlockWatermarkFreeExport()) return;
     setState(() { _busy = true; _message = null; });
     try {
       final saved = await _mediaChannel.invokeMethod<String>('saveVideoToGallery', {
@@ -750,7 +736,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final file = _enhancedVideo;
     if (file == null || _busy) return;
     final isPhoto = _isPhotoOutput(file);
-    if (!isPhoto && !await _unlockWatermarkFreeExport()) return;
     setState(() { _busy = true; _message = null; });
     try {
       await Share.shareXFiles([file], subject: 'Processed ${isPhoto ? 'photo' : 'video'} · Status HD', text: '${isPhoto ? 'Photo' : 'Video'} processed with picture adjustments in Status HD');
@@ -1112,6 +1097,16 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 5),
         Text(_processingMode == StudioProcessingMode.neural ? 'Neural mode processes decoded frames with the validated model.' : _neuralStatus, style: const TextStyle(color: Colors.white54, fontSize: 11)),
         const SizedBox(height: 10),
+        if (_processingMode == StudioProcessingMode.conventional)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Add Status HD watermark'),
+            subtitle: Text(_addWatermark ? 'The exported video will include a visible watermark.' : 'Off. The exported video will not include a watermark.'),
+            value: _addWatermark,
+            onChanged: _exporting ? null : (value) => setState(() { _addWatermark = value; _enhancedVideo = null; }),
+          )
+        else
+          const Text('Neural mode does not add a watermark.', style: TextStyle(color: Colors.white54, fontSize: 11)),
         if (_exporting) ...[
           LinearProgressIndicator(value: _enhanceProgress > 0 ? _enhanceProgress : null),
           const SizedBox(height: 6),
@@ -1481,18 +1476,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   bool _isPhotoOutput(XFile file) => file.path.toLowerCase().endsWith('.jpg') || file.path.toLowerCase().endsWith('.jpeg') || file.path.toLowerCase().endsWith('.png');
-
-  Future<bool> _unlockWatermarkFreeExport() async {
-    if (_watermarkFreeUnlocked) return true;
-    if (mounted) setState(() => _message = 'Watch a short rewarded ad to export this video without a watermark.');
-    final unlocked = await _rewardedAds.showFor1080p();
-    if (unlocked) {
-      if (mounted) setState(() => _watermarkFreeUnlocked = true);
-      return true;
-    }
-    if (mounted) setState(() => _message = 'Watermark-free export was not unlocked. Try again when the ad is available.');
-    return false;
-  }
 
   Future<void> _enhancePhoto(XFile file) async {
     if (_exporting || _busy) return;

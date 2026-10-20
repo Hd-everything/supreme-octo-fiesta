@@ -166,9 +166,6 @@ class MainActivity : FlutterActivity() {
                     // frames before scaling and leaves the audio stream synchronized.
                     effects.add(Crop(cropX * 2f - 1f, (cropX + cropWidth) * 2f - 1f, 1f - (cropY + cropHeight) * 2f, 1f - cropY * 2f))
                     effects.add(Presentation.createForWidthAndHeight(outputWidth, outputHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
-                    val label = SpannableString("statushd")
-                    label.setSpan(ForegroundColorSpan(Color.WHITE), 0, label.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    effects.add(OverlayEffect(listOf(TextOverlay.createStaticTextOverlay(label))))
                 }
                 val outputFile = File(outputPath)
                 outputFile.parentFile?.mkdirs()
