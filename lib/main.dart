@@ -348,9 +348,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String _neuralStatus = 'Checking neural runtime…';
   double _enhanceProgress = 0;
   double _brightnessBoost = 0.09;
-  double _contrastBoost = 0.18;
+  double _contrastBoost = 0.20;
   double _saturationBoost = 14;
-  double _sharpnessBoost = 0.22;
+  double _sharpnessBoost = 0.26;
   XFile? _enhancedVideo;
   List<Map<String, String>> _recentExports = <Map<String, String>>[];
 
@@ -363,6 +363,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool get _canApplyPictureAdjustments =>
       !_isVideo || _processingMode == StudioProcessingMode.conventional;
+
+  ({double clarity, double sharpness}) _qualityForOutputSize(int longEdge) =>
+      switch (longEdge) {
+        640 => (clarity: 0.10, sharpness: 0.14),
+        854 => (clarity: 0.13, sharpness: 0.17),
+        1280 => (clarity: 0.16, sharpness: 0.21),
+        1920 || -1 => (clarity: 0.20, sharpness: 0.26),
+        2560 => (clarity: 0.24, sharpness: 0.32),
+        _ => (clarity: 0.20, sharpness: 0.26),
+      };
+
+  void _selectOutputSize(int longEdge) {
+    final quality = _qualityForOutputSize(longEdge);
+    setState(() {
+      _targetLongEdge = longEdge;
+      _contrastBoost = quality.clarity;
+      _sharpnessBoost = quality.sharpness;
+      _enhancedVideo = null;
+      _exportEstimateMessage = _estimateExportSize();
+    });
+  }
 
   @override
   void initState() {
@@ -452,9 +473,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final controller = _videoController;
     if (controller == null || !controller.value.isInitialized) return;
     final total = controller.value.duration.inMilliseconds / 1000.0;
+    final quality = _qualityForOutputSize(1920);
     setState(() {
       _cropRatio = '9:16';
       _targetLongEdge = 1920;
+      _contrastBoost = quality.clarity;
+      _sharpnessBoost = quality.sharpness;
       _trimStart = 0;
       _trimEnd = total > 30 ? 30 : total;
       _enhancedVideo = null;
@@ -473,6 +497,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       if (picked == null || !mounted) return;
       final file = XFile(picked.path, name: picked.name);
+      final autoQuality = _qualityForOutputSize(-1);
       await _videoController?.dispose();
       await _enhancedPreviewController?.dispose();
       _videoController = null;
@@ -486,6 +511,8 @@ class _HomeScreenState extends State<HomeScreen> {
         _sourceResolution = null;
         _qualityRecommendation = null;
         _targetLongEdge = -1;
+        _contrastBoost = autoQuality.clarity;
+        _sharpnessBoost = autoQuality.sharpness;
         _enhancedVideo = null;
         _enhanceProgress = 0;
         _exportEstimateMessage = null;
@@ -996,7 +1023,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('OUTPUT SIZE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5, color: Colors.white54)),
           const SizedBox(height: 4),
-          const Text('Choose the resolution for your processed copy.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          const Text('Each resolution sets recommended clarity and sharpness; fine-tune them below.', style: TextStyle(color: Colors.white54, fontSize: 11)),
           const SizedBox(height: 10),
           Wrap(
             spacing: 8,
@@ -1015,11 +1042,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   selected: _targetLongEdge == option.$1,
                   onSelected: _exporting
                       ? null
-                      : (_) => setState(() {
-                            _targetLongEdge = option.$1;
-                            _enhancedVideo = null;
-                            _exportEstimateMessage = _estimateExportSize();
-                          }),
+                      : (_) => _selectOutputSize(option.$1),
                 ),
             ],
           ),
