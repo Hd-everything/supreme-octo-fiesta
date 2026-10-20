@@ -26,9 +26,12 @@ import android.graphics.Color
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import android.content.ContentValues
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.FileInputStream
@@ -68,7 +71,8 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+        val mediaChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        mediaChannel.setMethodCallHandler { call, result ->
             if (call.method == "neuralSuperResolutionCapability") {
                 Thread {
                     val capability = try {
@@ -172,25 +176,39 @@ class MainActivity : FlutterActivity() {
                 outputFile.parentFile?.mkdirs()
                 outputFile.delete()
                 val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(File(inputPath)))).setEffects(Effects(emptyList(), effects)).build()
-                val transformer = Transformer.Builder(this).setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object : Transformer.Listener {
-                    override fun onProgress(composition: androidx.media3.transformer.Composition, progressHolder: Transformer.ProgressHolder) {
-                        if (reportProgress && activeTransformer?.getProgress(progressHolder) == Transformer.PROGRESS_STATE_AVAILABLE) {
-                            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).invokeMethod("processingProgress", progressHolder.progress)
+                val progressHandler = Handler(Looper.getMainLooper())
+                val progressHolder = ProgressHolder()
+                lateinit var transformer: Transformer
+                lateinit var progressPoll: Runnable
+                progressPoll = object : Runnable {
+                    override fun run() {
+                        if (activeTransformer !== transformer) return
+                        if (transformer.getProgress(progressHolder) == Transformer.PROGRESS_STATE_AVAILABLE) {
+                            mediaChannel.invokeMethod("processingProgress", progressHolder.progress)
                         }
+                        progressHandler.postDelayed(this, 500)
                     }
+                }
+                transformer = Transformer.Builder(this).setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: androidx.media3.transformer.Composition, exportResult: ExportResult) {
+                        progressHandler.removeCallbacks(progressPoll)
                         activeTransformer = null
+                        if (reportProgress) mediaChannel.invokeMethod("processingProgress", 100)
                         if (outputFile.isFile && outputFile.length() > 0L) result.success(mapOf("path" to outputFile.absolutePath))
                         else { outputFile.delete(); result.error("output_missing", "Processing completed without a usable output file.", null) }
                     }
                     override fun onError(composition: androidx.media3.transformer.Composition, exportResult: ExportResult, exportException: ExportException) {
+                        progressHandler.removeCallbacks(progressPoll)
                         activeTransformer = null
                         outputFile.delete()
                         result.error("processing_failed", exportException.message ?: "This device could not process the video.", null)
                     }
                 }).build()
                 activeTransformer = transformer
-                try { transformer.start(item, outputFile.absolutePath) }
+                try {
+                    transformer.start(item, outputFile.absolutePath)
+                    if (reportProgress) progressHandler.post(progressPoll)
+                }
                 catch (error: Exception) { activeTransformer = null; outputFile.delete(); result.error("processing_start_failed", error.message ?: "Could not start processing.", null) }
                 return@setMethodCallHandler
             }
