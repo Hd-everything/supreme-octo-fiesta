@@ -732,17 +732,18 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _saveEnhancedVideo() async {
     final file = _enhancedVideo;
     if (file == null || _busy || _exporting) return;
-    if (!_isPhotoOutput(file) && !await _unlockWatermarkFreeExport()) return;
+    final isPhoto = _isPhotoOutput(file);
+    if (!isPhoto && !await _unlockWatermarkFreeExport()) return;
     setState(() { _busy = true; _message = null; });
     try {
       final saved = await _mediaChannel.invokeMethod<String>('saveVideoToGallery', {
         'inputPath': file.path,
-        'displayName': 'StatusHD_${DateTime.now().millisecondsSinceEpoch}.mp4',
+        'displayName': 'StatusHD_${DateTime.now().millisecondsSinceEpoch}.${isPhoto ? 'jpg' : 'mp4'}',
       });
       if (mounted) {
         setState(() => _message = saved == null
             ? 'Export saved, but the gallery did not return a location.'
-            : 'Saved to your Movies/Status HD folder. You can find it in Gallery or Files.');
+            : 'Saved to your ${isPhoto ? 'Pictures' : 'Movies'}/Status HD folder. You can find it in Gallery or Files.');
       }
     } on PlatformException catch (error) {
       if (mounted) setState(() => _message = error.message ?? 'Could not save this export to the gallery. Use Share instead.');
@@ -756,13 +757,16 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _shareEnhancedVideo() async {
     final file = _enhancedVideo;
     if (file == null || _busy) return;
-    if (!_isPhotoOutput(file) && !await _unlockWatermarkFreeExport()) return;
+    final isPhoto = _isPhotoOutput(file);
+    if (!isPhoto && !await _unlockWatermarkFreeExport()) return;
     setState(() { _busy = true; _message = null; });
     try {
-      await Share.shareXFiles([file], subject: 'Processed video · Status HD', text: 'Video processed with picture adjustments in Status HD');
-      if (mounted) setState(() => _message = 'Enhanced video handed to the share sheet. WhatsApp may still recompress it.');
+      await Share.shareXFiles([file], subject: 'Processed ${isPhoto ? 'photo' : 'video'} · Status HD', text: '${isPhoto ? 'Photo' : 'Video'} processed with picture adjustments in Status HD');
+      if (mounted) setState(() => _message = isPhoto
+          ? 'Enhanced photo handed to the share sheet.'
+          : 'Enhanced video handed to the share sheet. WhatsApp may still recompress it.');
     } catch (_) {
-      if (mounted) setState(() => _message = 'Could not share the enhanced video.');
+      if (mounted) setState(() => _message = 'Could not share the enhanced ${isPhoto ? 'photo' : 'video'}.');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -1413,6 +1417,29 @@ class _HomeScreenState extends State<HomeScreen> {
                 _outputAndQualityControls(accent),
                 const SizedBox(height: 14),
                 _mediaPreview(accent),
+              ],
+              if (_selected != null && !_isVideo) ...[
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _exporting || _busy
+                        ? null
+                        : () => _enhancePhoto(_selected!),
+                    icon: _exporting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.auto_awesome_rounded),
+                    label: Text(_exporting ? 'Processing photo…' : 'Process photo'),
+                  ),
+                ),
+                if (_enhancedVideo != null) ...[
+                  const SizedBox(height: 14),
+                  _processedOutputPreview(accent),
+                ],
               ],
               if (_selected != null && _isVideo) ...[
                 const SizedBox(height: 14),

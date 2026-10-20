@@ -550,24 +550,32 @@ class MainActivity : FlutterActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             throw IllegalStateException("Saving directly to Gallery requires Android 10 or newer. Use Share to save this export instead.")
         }
+        val isPhoto = inputPath.substringAfterLast('.', "").lowercase() in setOf("jpg", "jpeg", "png", "webp")
+        val extension = inputPath.substringAfterLast('.', "mp4").lowercase()
+        val mimeType = when (extension) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            else -> "video/mp4"
+        }
         val safeName = displayName
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
-            .let { if (it.endsWith(".mp4", ignoreCase = true)) it else "$it.mp4" }
+            .let { name -> if (name.substringAfterLast('.', "").equals(extension, ignoreCase = true)) name else "$name.$extension" }
         val resolver = contentResolver
         val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, safeName)
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Status HD")
-            put(MediaStore.Video.Media.IS_PENDING, 1)
+            put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, (if (isPhoto) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES) + "/Status HD")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val collection = if (isPhoto) MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) else MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val uri = resolver.insert(collection, values)
             ?: throw IllegalStateException("Android could not create a Gallery entry.")
         try {
             resolver.openOutputStream(uri, "w")?.use { output ->
                 FileInputStream(inputPath).use { input -> input.copyTo(output) }
             } ?: throw IllegalStateException("Android could not open the Gallery output.")
-            val published = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+            val published = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
             resolver.update(uri, published, null, null)
             return uri
         } catch (error: Exception) {
