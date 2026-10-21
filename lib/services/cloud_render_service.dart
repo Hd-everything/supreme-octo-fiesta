@@ -85,10 +85,7 @@ class CloudRenderService {
       final token = prepared['token'] as String?;
       if (objectPath == null || token == null) throw const CloudRenderException('The server did not return a secure upload destination.');
       try {
-        await client.storage.from(bucket).uploadToSignedUrl(
-          objectPath, token, file,
-          contentType: mime,
-        );
+        await client.storage.from(bucket).uploadToSignedUrl(objectPath, token, file);
       } catch (_) {
         throw CloudRenderException('Upload failed for ${p.basename(localPath)}. Check your connection and retry.');
       }
