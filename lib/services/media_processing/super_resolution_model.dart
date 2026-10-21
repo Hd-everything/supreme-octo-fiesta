@@ -51,7 +51,7 @@ class SuperResolutionCapability {
   bool get isReady => status == SuperResolutionStatus.ready;
 }
 
-/// Owns the single interpreter used by both StatusHD and Movie Player.
+/// Owns the single interpreter used by both Vyntra and Movie Player.
 ///
 /// This class intentionally exposes frame-tensor inference rather than
 /// pretending that a dimension change is neural restoration. The Android

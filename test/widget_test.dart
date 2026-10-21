@@ -5,25 +5,30 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('Status HD opens with the studio and navigation', (tester) async {
+  testWidgets('Vyntra opens with the studio and navigation', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();
     await tester.pumpWidget(StatusHdApp(preferences: preferences));
     await tester.pumpAndSettle();
 
-    expect(find.text('STATUS HD'), findsOneWidget);
-    expect(find.text('Status HD starts with a\nclip from your phone.'), findsOneWidget);
+    expect(find.text('VYNTRA'), findsOneWidget);
+    expect(find.text('Make every frame\nready to share.'), findsOneWidget);
+    expect(find.text('LOCAL MEDIA STUDIO'), findsOneWidget);
     expect(find.text('Studio'), findsOneWidget);
+    expect(find.text('Projects'), findsOneWidget);
     expect(find.text('Tools'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
     expect(find.byTooltip('Open movie player'), findsOneWidget);
-    expect(find.text('Movie Player'), findsWidgets);
+    expect(find.text('Player'), findsOneWidget);
+
+    await tester.scrollUntilVisible(find.text('Batch media'), 250);
+    expect(find.text('Batch media'), findsOneWidget);
 
     await tester.tap(find.text('Tools'));
     await tester.pumpAndSettle();
     expect(find.text('Tools'), findsWidgets);
-    expect(find.text('Movie Player'), findsWidgets);
-    expect(find.text('Status HD'), findsWidgets);
+    expect(find.text('Player'), findsWidgets);
+    expect(find.text('Vyntra Studio'), findsWidgets);
 
     // The trim/split card is lower in the scrollable tools list and may not
     // be mounted until it is brought into view.

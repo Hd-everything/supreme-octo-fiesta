@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
 import 'package:flutter/material.dart';
 import 'media_manager_screen.dart';
+import 'project_library_screen.dart';
 import 'movie_player_screen.dart';
 import 'services/media_processing/video_processing_service.dart';
 import 'services/media_processing/processing_job_queue.dart';
@@ -47,7 +49,7 @@ Future<SharedPreferences> _loadStartupPreferences() async {
   try {
     return await SharedPreferences.getInstance();
   } catch (error, stackTrace) {
-    debugPrint('Status HD could not load saved settings; using temporary settings: $error');
+    debugPrint('Vyntra could not load saved settings; using temporary settings: $error');
     debugPrintStack(stackTrace: stackTrace);
     // A preferences plugin failure should not prevent the media tools from
     // opening. The in-memory store keeps this session usable until restart.
@@ -87,17 +89,21 @@ class _StatusHdStartupState extends State<StatusHdStartup> {
                     ? Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Text('Status HD could not load app settings.'),
+                          const Text('Vyntra could not load app settings.'),
                           const SizedBox(height: 12),
                           FilledButton(onPressed: _retry, child: const Text('Try again')),
                         ],
                       )
-                    : const Column(
+                    : Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 16),
-                          Text('Starting Status HD…'),
+                          Image.asset('assets/app_icon.png', width: 68, height: 68),
+                          const SizedBox(height: 16),
+                          const CircularProgressIndicator(),
+                          const SizedBox(height: 16),
+                          const Text('Vyntra', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+                          const SizedBox(height: 4),
+                          const Text('Video Editor & AI Studio', style: TextStyle(color: Colors.white60, fontSize: 12)),
                         ],
                       ),
               ),
@@ -221,7 +227,7 @@ class _StatusHdAppState extends State<StatusHdApp> {
     );
 
     return MaterialApp(
-      title: 'Status HD',
+      title: 'Vyntra — Video Editor & AI Studio',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -342,6 +348,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _cancelExportRequested = false;
   bool _showOriginalComparison = false;
   bool _watermarkFreeUnlocked = false;
+  bool _statusPresetApplied = false;
   bool _adUnlocking = false;
   StudioProcessingMode _processingMode = StudioProcessingMode.conventional;
   bool _neuralReady = false;
@@ -352,8 +359,11 @@ class _HomeScreenState extends State<HomeScreen> {
   double _contrastBoost = 0.20;
   double _saturationBoost = 14;
   double _sharpnessBoost = 0.26;
+  String _photoRatio = 'Original';
+  int _photoQuarterTurns = 0;
   XFile? _enhancedVideo;
   List<Map<String, String>> _recentExports = <Map<String, String>>[];
+  final Map<String, Future<Uint8List?>> _videoFrameCache = <String, Future<Uint8List?>>{};
 
   bool get _isVideo {
     final name = _selected?.name.toLowerCase() ?? '';
@@ -422,7 +432,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (path.isNotEmpty) {
           entries.add({
             'path': path,
-            'name': decoded['name']?.toString() ?? 'Status HD export',
+            'name': decoded['name']?.toString() ?? 'Vyntra export',
             'kind': decoded['kind']?.toString() ?? 'Export',
             'createdAt': decoded['createdAt']?.toString() ?? '',
           });
@@ -465,13 +475,43 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) setState(() => _message = 'This temporary export is no longer available. Saved copies remain in your gallery.');
       return;
     }
-    await Share.shareXFiles([XFile(path, mimeType: 'video/mp4')], subject: entry['name']);
+    final isPhoto = path.toLowerCase().endsWith('.jpg') || path.toLowerCase().endsWith('.jpeg') || path.toLowerCase().endsWith('.png');
+    await Share.shareXFiles([XFile(path, mimeType: isPhoto ? 'image/jpeg' : 'video/mp4')], subject: entry['name']);
+  }
+
+  Future<void> _saveRecentExport(Map<String, String> entry) async {
+    final path = entry['path']!;
+    if (!await File(path).exists()) { if (mounted) setState(() => _message = 'This temporary export has been cleared. Create it again from the original.'); return; }
+    final photo = path.toLowerCase().endsWith('.jpg') || path.toLowerCase().endsWith('.jpeg') || path.toLowerCase().endsWith('.png');
+    try {
+      await _mediaChannel.invokeMethod<String>('saveVideoToGallery', {'inputPath': path, 'displayName': 'Vyntra_${DateTime.now().millisecondsSinceEpoch}.${photo ? 'jpg' : 'mp4'}'});
+      if (mounted) setState(() => _message = 'Saved to ${photo ? 'Pictures' : 'Movies'}/Vyntra.');
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _message = error.message ?? 'Could not save this export. Share it to another app to keep a copy.');
+    } catch (_) { if (mounted) setState(() => _message = 'Could not save this export. Share it to another app to keep a copy.'); }
   }
 
   Future<void> _removeRecentExport(Map<String, String> entry) async {
     final next = [..._recentExports]..remove(entry);
     setState(() => _recentExports = next);
     await widget.preferences.setStringList(_recentExportsKey, next.map(jsonEncode).toList());
+  }
+
+  Future<void> _clearTemporaryExports() async {
+    final owned = _recentExports.where((entry) => _isTemporaryExport(entry) && File(entry['path']!).existsSync()).toList();
+    if (owned.isEmpty) { if (mounted) setState(() => _message = 'No available temporary exports to remove.'); return; }
+    final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+      title: const Text('Remove temporary exports?'),
+      content: Text('Delete ${owned.length} processed file${owned.length == 1 ? '' : 's'} from temporary storage? Saved copies in Gallery will stay.'),
+      actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep files')), FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Remove'))],
+    ));
+    if (confirmed != true) return;
+    for (final entry in owned) {
+      try { await File(entry['path']!).delete(); } catch (_) {}
+    }
+    final remaining = _recentExports.where((entry) => !owned.contains(entry)).toList();
+    if (mounted) setState(() { _recentExports = remaining; _message = 'Removed ${owned.length} temporary exports. Gallery copies were not changed.'; });
+    await widget.preferences.setStringList(_recentExportsKey, remaining.map(jsonEncode).toList());
   }
 
   void _applyWhatsAppStatusPreset() {
@@ -481,6 +521,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final quality = _qualityForOutputSize(1920);
     setState(() {
       _cropRatio = '9:16';
+      _statusPresetApplied = true;
+      _processingMode = StudioProcessingMode.conventional;
       _targetLongEdge = 1920;
       _contrastBoost = quality.clarity;
       _sharpnessBoost = quality.sharpness;
@@ -490,8 +532,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _segments = [];
       _exportEstimateMessage = _estimateExportSize();
       _message = total > 30
-          ? 'WhatsApp Status preset applied: 9:16 frame, 1080p output and the first 30 seconds selected. Use Auto-cut for every clip.'
-          : 'WhatsApp Status preset applied: 9:16 frame, 1080p output and a status-length clip.';
+          ? 'WhatsApp Status preset applied: Process to export the first 30 seconds as vertical 1080p, or use Auto-cut to split the full video.'
+          : 'WhatsApp Status preset applied: Process to export this vertical 1080p clip.';
     });
   }
 
@@ -512,6 +554,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _message = null;
         _trimStart = 0;
         _trimEnd = null;
+        _statusPresetApplied = false;
         _segments = [];
         _sourceResolution = null;
         _qualityRecommendation = null;
@@ -519,6 +562,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _contrastBoost = autoQuality.clarity;
         _sharpnessBoost = autoQuality.sharpness;
         _enhancedVideo = null;
+        _showOriginalComparison = false;
         _enhanceProgress = 0;
         _exportEstimateMessage = null;
       });
@@ -541,7 +585,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _sourceResolution = '$width×$height';
           final shortEdge = width < height ? width : height;
           _qualityRecommendation = shortEdge < 720
-              ? 'Low-resolution video detected. Status HD can apply conventional enhancement and upscale it, but larger dimensions do not recreate missing detail.'
+              ? 'Low-resolution video detected. Vyntra can apply conventional enhancement and upscale it, but larger dimensions do not recreate missing detail.'
               : 'Choose an output size for conventional enhancement. The new copy adjusts picture tone and sharpness while leaving your original untouched.';
           // Auto selects at least 1080p; output size can be changed below the preview.
           _targetLongEdge = -1;
@@ -553,9 +597,55 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _batchProcessPhotos() async {
+    if (_exporting || _busy) return;
+    final selected = await Navigator.of(context).push<List<DeviceMedia>>(
+      MaterialPageRoute(builder: (_) => const MediaManagerScreen(multiSelect: true)),
+    );
+    if (selected == null || selected.isEmpty || !mounted) return;
+    setState(() { _exporting = true; _enhanceProgress = 0; _message = 'Preparing ${selected.length} photos…'; });
+    final outputs = <XFile>[];
+    try {
+      for (var index = 0; index < selected.length; index++) {
+        final item = selected[index];
+        if (item.isVideo) {
+          final metadata = await _processing.inspect(item.path);
+          final sourceLong = metadata.longEdge;
+          final sourceShort = metadata.shortEdge;
+          final requestedLong = _targetLongEdge == -1 ? (sourceLong < 1920 ? 1920 : sourceLong) : (_targetLongEdge == 0 ? sourceLong : _targetLongEdge);
+          final longBounded = requestedLong.clamp(2, 4096).toInt();
+          final targetLong = longBounded.isEven ? longBounded : longBounded - 1;
+          final shortBounded = (sourceShort * targetLong / sourceLong).round().clamp(2, 4096).toInt();
+          final targetShort = shortBounded.isEven ? shortBounded : shortBounded + 1;
+          final outputWidth = metadata.width >= metadata.height ? targetLong : targetShort;
+          final outputHeight = metadata.width >= metadata.height ? targetShort : targetLong;
+          final resolution = targetLong >= 2560 ? OutputResolution.p1440 : targetLong >= 1920 ? OutputResolution.p1080 : targetLong >= 1280 ? OutputResolution.p720 : OutputResolution.original;
+          final output = '${Directory.systemTemp.path}/vyntra_batch_${DateTime.now().microsecondsSinceEpoch}_$index.mp4';
+          final result = await _processing.process(ProcessingRequest.enhance(inputPath: item.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: true)));
+          outputs.add(XFile(result.path, mimeType: 'video/mp4'));
+        } else {
+          final output = '${Directory.systemTemp.path}/vyntra_batch_${DateTime.now().microsecondsSinceEpoch}_$index.jpg';
+          final ratio = switch (_photoRatio) { '1:1' => 1.0, '4:5' => 4 / 5, '9:16' => 9 / 16, '16:9' => 16 / 9, _ => null };
+          final result = await _photos.process(inputPath: item.path, outputPath: output, targetLongEdge: _targetLongEdge > 0 ? _targetLongEdge : null, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, aspectRatio: ratio, quarterTurns: _photoQuarterTurns);
+          outputs.add(XFile(result.path, mimeType: 'image/jpeg'));
+        }
+        if (mounted) setState(() { _enhanceProgress = (index + 1) / selected.length; _message = 'Processed ${index + 1} of ${selected.length} photos'; });
+      }
+      await _recordExports(outputs, 'Batch photo');
+      if (mounted) setState(() => _message = 'Batch complete: ${outputs.length} media files are ready in Recent exports. Save or share each copy.');
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Batch stopped after ${outputs.length} photos. ${error.toString().replaceFirst('Exception: ', '')}');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
   String? _estimateExportSize() {
     final duration = _videoController?.value.duration;
     if (duration == null || duration.inSeconds <= 0 || _targetLongEdge == 0) return null;
+    final seconds = _statusPresetApplied
+        ? (((_trimEnd ?? duration.inMilliseconds / 1000) - _trimStart).clamp(0, duration.inMilliseconds / 1000))
+        : duration.inMilliseconds / 1000;
     final videoBitrate = _targetLongEdge == 640
         ? 1200000
         : _targetLongEdge == 854
@@ -566,7 +656,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ? 14000000
                     : 8000000;
     final audioBitrate = _targetLongEdge <= 854 ? 128000 : 160000;
-    final estimatedBytes = ((videoBitrate + audioBitrate) * duration.inSeconds / 8).round();
+    final estimatedBytes = ((videoBitrate + audioBitrate) * seconds / 8).round();
     return 'Estimated size: about ${_formatBytes(estimatedBytes)} · actual size varies by video content';
   }
 
@@ -574,6 +664,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final file = _selected;
     if (file != null && !_isVideo) {
       await _enhancePhoto(file);
+      return;
+    }
+    if (!Platform.isAndroid) {
+      setState(() => _message = 'Video enhancement is currently available on Android. You can still share the original video.');
       return;
     }
     final controller = _videoController;
@@ -593,11 +687,11 @@ class _HomeScreenState extends State<HomeScreen> {
             : _targetLongEdge;
     final boundedLongEdge = requestedLongEdge.clamp(2, 4096).toInt();
     final targetLongEdge = boundedLongEdge.isEven ? boundedLongEdge : boundedLongEdge - 1;
-    final requestedShortEdge = (sourceShortEdge * targetLongEdge / sourceLongEdge).round();
+    final requestedShortEdge = _statusPresetApplied ? (targetLongEdge * 9 / 16).round() : (sourceShortEdge * targetLongEdge / sourceLongEdge).round();
     final boundedShortEdge = requestedShortEdge.clamp(2, 4096).toInt();
     final targetShortEdge = boundedShortEdge.isEven ? boundedShortEdge : boundedShortEdge + 1;
-    final outputWidth = sourceWidth >= sourceHeight ? targetLongEdge : targetShortEdge;
-    final outputHeight = sourceWidth >= sourceHeight ? targetShortEdge : targetLongEdge;
+    final outputWidth = _statusPresetApplied ? targetShortEdge : sourceWidth >= sourceHeight ? targetLongEdge : targetShortEdge;
+    final outputHeight = _statusPresetApplied ? targetLongEdge : sourceWidth >= sourceHeight ? targetShortEdge : targetLongEdge;
     if (_targetLongEdge == 0) {
       setState(() => _message = 'Original selected. The source file remains unchanged; no re-encode is needed.');
       return;
@@ -612,16 +706,25 @@ class _HomeScreenState extends State<HomeScreen> {
       _exportEstimateMessage = _estimateExportSize();
     });
     try {
-      final output = '${Directory.systemTemp.path}/statushd_enhanced_${DateTime.now().microsecondsSinceEpoch}.mp4';
+      final output = '${Directory.systemTemp.path}/vyntra_enhanced_${DateTime.now().microsecondsSinceEpoch}.mp4';
       final metadata = await _processing.inspect(file.path);
       final resolution = _targetLongEdge == 2560
           ? OutputResolution.p1440
           : _targetLongEdge == 1280
               ? OutputResolution.p720
               : OutputResolution.p1080;
+      final useWatermarkFreeCredit = _watermarkFreeUnlocked && _processingMode == StudioProcessingMode.conventional;
       final processed = _processingMode == StudioProcessingMode.neural
           ? await _processing.processNeural(inputPath: file.path, outputPath: output, metadata: metadata, outputWidth: outputWidth, outputHeight: outputHeight)
-          : await _processing.process(ProcessingRequest.enhance(inputPath: file.path, outputPath: output, metadata: metadata, enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: !_watermarkFreeUnlocked)));
+          : await _processing.process(ProcessingRequest.enhance(
+              inputPath: file.path,
+              outputPath: output,
+              metadata: metadata,
+              enhancement: EnhancementConfiguration(resolution: resolution, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, outputWidth: outputWidth, outputHeight: outputHeight, watermark: !useWatermarkFreeCredit),
+              crop: _statusPresetApplied ? CropConfiguration.centeredFor(metadata, 9 / 16) : null,
+              startMs: _statusPresetApplied ? (_trimStart * 1000).round() : null,
+              endMs: _statusPresetApplied ? ((_trimEnd ?? controller.value.duration.inMilliseconds / 1000) * 1000).round() : null,
+            ));
       final processedPath = processed.path;
       if (_cancelExportRequested) {
         try { await File(processedPath).delete(); } catch (_) {}
@@ -629,6 +732,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       final actualLength = await File(processedPath).length();
       if (actualLength == 0) throw StateError('The processed video is empty.');
+      if (useWatermarkFreeCredit && mounted) setState(() => _watermarkFreeUnlocked = false);
       await _enhancedPreviewController?.dispose();
       final previewController = VideoPlayerController.file(File(processedPath));
       await previewController.initialize();
@@ -649,7 +753,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (error) {
       if (mounted) setState(() => _message = _cancelExportRequested
           ? 'Export cancelled. The original video is unchanged.'
-          : 'Video export failed on this device. Try a smaller output size or a shorter clip. Details: ${error.toString().replaceFirst('Exception: ', '')}');
+          : _friendlyProcessingError(error, 'Video export failed. Try a smaller output size or a shorter clip.');
     } finally {
       if (mounted) setState(() => _exporting = false);
       _cancelExportRequested = false;
@@ -674,7 +778,8 @@ class _HomeScreenState extends State<HomeScreen> {
       return Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [Icon(Icons.verified_rounded, color: accent), const SizedBox(width: 8), const Expanded(child: Text('ENHANCED PHOTO', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.4))), const Text('JPEG', style: TextStyle(color: Colors.white54, fontSize: 11))]),
         const SizedBox(height: 12),
-        ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.file(File(file.path), height: 240, width: double.infinity, fit: BoxFit.contain)),
+        ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.file(File(_showOriginalComparison && _selected != null ? _selected!.path : file.path), height: 240, width: double.infinity, fit: BoxFit.contain)),
+        Align(alignment: Alignment.centerRight, child: TextButton.icon(onPressed: () => setState(() => _showOriginalComparison = !_showOriginalComparison), icon: Icon(Icons.compare_arrows_rounded), label: Text(_showOriginalComparison ? 'Show processed photo' : 'Compare original'))),
         const SizedBox(height: 10),
         Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _busy ? null : _saveEnhancedVideo, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save copy'))), const SizedBox(width: 8), Expanded(child: FilledButton.icon(onPressed: _busy ? null : _shareEnhancedVideo, icon: const Icon(Icons.ios_share_rounded), label: const Text('Share')))]),
       ])));
@@ -729,17 +834,21 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _saveEnhancedVideo() async {
     final file = _enhancedVideo;
     if (file == null || _busy || _exporting) return;
+    if (!Platform.isAndroid) {
+      setState(() => _message = 'Direct Gallery saving is currently available on Android. Use Share to save this copy on your device.');
+      return;
+    }
     final isPhoto = _isPhotoOutput(file);
     setState(() { _busy = true; _message = null; });
     try {
       final saved = await _mediaChannel.invokeMethod<String>('saveVideoToGallery', {
         'inputPath': file.path,
-        'displayName': 'StatusHD_${DateTime.now().millisecondsSinceEpoch}.${isPhoto ? 'jpg' : 'mp4'}',
+        'displayName': 'Vyntra_${DateTime.now().millisecondsSinceEpoch}.${isPhoto ? 'jpg' : 'mp4'}',
       });
       if (mounted) {
         setState(() => _message = saved == null
             ? 'Export saved, but the gallery did not return a location.'
-            : 'Saved to your ${isPhoto ? 'Pictures' : 'Movies'}/Status HD folder. You can find it in Gallery or Files.');
+            : 'Saved to your ${isPhoto ? 'Pictures' : 'Movies'}/Vyntra folder. You can find it in Gallery or Files.');
       }
     } on PlatformException catch (error) {
       if (mounted) setState(() => _message = error.message ?? 'Could not save this export to the gallery. Use Share instead.');
@@ -756,7 +865,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final isPhoto = _isPhotoOutput(file);
     setState(() { _busy = true; _message = null; });
     try {
-      await Share.shareXFiles([file], subject: 'Processed ${isPhoto ? 'photo' : 'video'} · Status HD', text: '${isPhoto ? 'Photo' : 'Video'} processed with picture adjustments in Status HD');
+      await Share.shareXFiles([file], subject: 'Processed ${isPhoto ? 'photo' : 'video'} · Vyntra', text: '${isPhoto ? 'Photo' : 'Video'} processed with picture adjustments in Vyntra');
       if (mounted) setState(() => _message = isPhoto
           ? 'Enhanced photo handed to the share sheet.'
           : 'Enhanced video handed to the share sheet. WhatsApp may still recompress it.');
@@ -777,8 +886,8 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       await Share.shareXFiles(
         [XFile(file.path, mimeType: _isVideo ? 'video/*' : 'image/*')],
-        subject: 'Status HD media',
-        text: 'Shared from Status HD',
+        subject: 'Vyntra media',
+        text: 'Shared from Vyntra',
       );
       if (mounted) setState(() => _message = 'Media handed to the share sheet. The destination app may recompress it.');
     } catch (_) {
@@ -794,6 +903,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final file = _selected;
     final controller = _videoController;
     if (file == null || controller == null || !controller.value.isInitialized || _exporting || _busy) return;
+    if (!Platform.isAndroid) {
+      setState(() => _message = 'Video crop is currently available on Android.');
+      return;
+    }
     final sourceWidth = controller.value.size.width.round();
     final sourceHeight = controller.value.size.height.round();
     if (sourceWidth < 2 || sourceHeight < 2) {
@@ -833,7 +946,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _segments = [];
     });
     try {
-      final output = '${Directory.systemTemp.path}/statushd_crop_${DateTime.now().microsecondsSinceEpoch}.mp4';
+      final output = '${Directory.systemTemp.path}/vyntra_crop_${DateTime.now().microsecondsSinceEpoch}.mp4';
       final metadata = await _processing.inspect(file.path);
       final aspectRatio = outputWidth / outputHeight;
       final processed = await _processing.process(ProcessingRequest.crop(
@@ -888,7 +1001,7 @@ class _HomeScreenState extends State<HomeScreen> {
       var index = 1;
       while (cursor < endMs) {
         final segmentEnd = (cursor + 30000).clamp(0, endMs).toInt();
-        final output = '${Directory.systemTemp.path}/statushd_${DateTime.now().microsecondsSinceEpoch}_$index.mp4';
+      final output = '${Directory.systemTemp.path}/vyntra_${DateTime.now().microsecondsSinceEpoch}_$index.mp4';
         final path = await _mediaChannel.invokeMethod<String>('trimVideo', {
           'inputPath': file.path,
           'startMs': cursor,
@@ -942,11 +1055,11 @@ class _HomeScreenState extends State<HomeScreen> {
       for (var i = 0; i < _segments.length; i++) {
         await _mediaChannel.invokeMethod<String>('saveVideoToGallery', {
           'inputPath': _segments[i].path,
-          'displayName': 'StatusHD_Clip_${DateTime.now().millisecondsSinceEpoch}_${i + 1}.mp4',
+          'displayName': 'Vyntra_Clip_${DateTime.now().millisecondsSinceEpoch}_${i + 1}.mp4',
         });
         savedCount++;
       }
-      if (mounted) setState(() => _message = 'Saved $savedCount clip(s) to Movies/Status HD.');
+      if (mounted) setState(() => _message = 'Saved $savedCount clip(s) to Movies/Vyntra.');
     } on PlatformException catch (error) {
       if (mounted) setState(() => _message = savedCount > 0
           ? 'Saved $savedCount clip(s). The remaining clips could not be saved: ${error.message ?? 'Gallery error'}.'
@@ -964,7 +1077,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_segments.isEmpty || _busy) return;
     setState(() { _busy = true; _message = null; });
     try {
-      await Share.shareXFiles(_segments, subject: 'Status HD video segments', text: 'Video segments prepared with Status HD');
+      await Share.shareXFiles(_segments, subject: 'Vyntra video segments', text: 'Video segments prepared with Vyntra');
       if (mounted) setState(() => _message = 'Segments handed to the share sheet. WhatsApp may process them during upload.');
     } catch (_) {
       if (mounted) setState(() => _message = 'Could not share the exported segments.');
@@ -1106,7 +1219,7 @@ class _HomeScreenState extends State<HomeScreen> {
         SegmentedButton<StudioProcessingMode>(
           segments: [
             const ButtonSegment(value: StudioProcessingMode.conventional, label: Text('Conventional'), icon: Icon(Icons.tune_rounded)),
-            ButtonSegment(value: StudioProcessingMode.neural, label: const Text('Neural'), icon: const Icon(Icons.auto_awesome_rounded), enabled: _neuralReady),
+            ButtonSegment(value: StudioProcessingMode.neural, label: const Text('Neural'), icon: const Icon(Icons.auto_awesome_rounded), enabled: _neuralReady && !_statusPresetApplied),
           ],
           selected: {_processingMode},
           onSelectionChanged: _exporting ? null : (values) => setState(() { _processingMode = values.first; _enhancedVideo = null; }),
@@ -1130,8 +1243,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(width: 10),
                 Expanded(child: Text(
                   _watermarkFreeUnlocked
-                      ? 'Reward earned. New videos export without the Status HD watermark.'
-                      : 'New videos include a Status HD watermark. Watch a rewarded ad before processing to remove it.',
+                      ? 'One ad unlocks one watermark-free video export. Your reward is ready to use.'
+                      : 'New videos include a Vyntra watermark. Watch one rewarded ad to remove it from one video export.',
                   style: const TextStyle(color: Colors.white70, fontSize: 11, height: 1.35),
                 )),
               ]),
@@ -1144,7 +1257,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     icon: _adUnlocking
                         ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.play_circle_outline_rounded),
-                    label: Text(_adUnlocking ? 'Loading rewarded ad…' : 'Watch ad to remove watermark'),
+                    label: Text(_adUnlocking ? 'Loading rewarded ad…' : 'Watch ad · unlock one video'),
                   ),
                 ),
               ],
@@ -1163,9 +1276,9 @@ class _HomeScreenState extends State<HomeScreen> {
         SizedBox(
           width: double.infinity,
           child: FilledButton.icon(
-            onPressed: _exporting || _busy ? null : _enhanceVideo,
+            onPressed: _exporting || _busy || (_isVideo && !Platform.isAndroid) ? null : _enhanceVideo,
             icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome_rounded),
-            label: Text(_exporting ? 'Processing video…' : 'Process video · ${_targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 2560 ? '1440p' : '1080p'}'),
+            label: Text(!Platform.isAndroid && _isVideo ? 'Video processing is Android only' : _exporting ? 'Processing video…' : 'Process video · ${_targetLongEdge == -1 ? 'Auto' : _targetLongEdge == 640 ? '360p' : _targetLongEdge == 854 ? '480p' : _targetLongEdge == 1280 ? '720p' : _targetLongEdge == 2560 ? '1440p' : '1080p'}'),
           ),
         ),
         if (_exportEstimateMessage != null) ...[
@@ -1266,7 +1379,7 @@ class _HomeScreenState extends State<HomeScreen> {
         SizedBox(
           width: double.infinity,
           child: FilledButton.icon(
-            onPressed: _exporting || _busy ? null : _cropVideo,
+            onPressed: _exporting || _busy || !Platform.isAndroid ? null : _cropVideo,
             icon: _exporting ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.crop_rounded),
             label: Text(_exporting ? 'Processing video…' : 'Crop & preview video'),
           ),
@@ -1279,6 +1392,9 @@ class _HomeScreenState extends State<HomeScreen> {
         ]),
         const SizedBox(height: 6),
         const Text('Choose the section to keep. Longer selections are split into clips of up to 30 seconds.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.4)),
+        const SizedBox(height: 12),
+        _trimFilmstrip(_selected!.path, start, end, accent),
+        const SizedBox(height: 8),
         const SizedBox(height: 10),
         RangeSlider(
           min: 0,
@@ -1287,7 +1403,7 @@ class _HomeScreenState extends State<HomeScreen> {
           values: RangeValues(start, end > start ? end : (start + .1).clamp(0, totalSeconds).toDouble()),
           labels: RangeLabels(_formatTime(start), _formatTime(end)),
           activeColor: accent,
-          onChanged: _exporting ? null : (range) => setState(() { _trimStart = range.start; _trimEnd = range.end; _segments = []; }),
+          onChanged: _exporting ? null : (range) => setState(() { _trimStart = range.start; _trimEnd = range.end; _segments = []; _exportEstimateMessage = _estimateExportSize(); }),
         ),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           Text('IN  ${_formatTime(start)}', style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w800)),
@@ -1336,10 +1452,43 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<Uint8List?> _videoFrame(String path, int timeMs) async {
+    final frameTimeMs = (timeMs / 1000).round() * 1000;
+    final key = '$path@$frameTimeMs';
+    if (!_videoFrameCache.containsKey(key) && _videoFrameCache.length >= 80) return null;
+    return _videoFrameCache.putIfAbsent(key, () async {
+      try { return await _mediaChannel.invokeMethod<Uint8List>('videoThumbnail', {'path': path, 'timeMs': frameTimeMs}); } catch (_) { return null; }
+    });
+  }
+
+  Widget _trimFilmstrip(String path, double start, double end, Color accent) => ClipRRect(
+    borderRadius: BorderRadius.circular(12),
+    child: SizedBox(height: 64, child: Row(children: [
+      for (var index = 0; index < 5; index++) Expanded(child: FutureBuilder<Uint8List?>(
+        future: _videoFrame(path, ((start + (end - start) * index / 4) * 1000).round()),
+        builder: (context, snapshot) => Container(
+          margin: const EdgeInsets.only(right: 2),
+          color: accent.withValues(alpha:.12),
+          child: snapshot.data == null ? Center(child: Icon(Icons.movie_outlined, size: 18, color: accent.withValues(alpha:.6))) : Image.memory(snapshot.data!, fit: BoxFit.cover, gaplessPlayback: true),
+        ),
+      )),
+    ])),
+  );
+
   String _formatBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  String _friendlyProcessingError(Object error, String fallback) {
+    final detail = error.toString().replaceFirst('Exception: ', '').replaceFirst('PlatformException(', '');
+    final lower = detail.toLowerCase();
+    if (lower.contains('space') || lower.contains('storage') || lower.contains('disk')) return 'Not enough free space to finish. Free storage and try again.';
+    if (lower.contains('permission') || lower.contains('access denied')) return 'Vyntra cannot read this file. Allow media access or choose it again.';
+    if (lower.contains('unsupported') || lower.contains('format') || lower.contains('codec')) return 'This file format is not supported on this device. Try an MP4 video or JPEG photo.';
+    if (lower.contains('cancel')) return 'Processing was cancelled. Your original is unchanged.';
+    return '$fallback $detail';
   }
 
   @override
@@ -1351,6 +1500,7 @@ class _HomeScreenState extends State<HomeScreen> {
           index: _tab,
           children: [
             _homeContent(accent),
+            ProjectLibraryScreen(preferences: widget.preferences),
             _toolsContent(accent),
             const SizedBox.shrink(),
             _settingsContent(accent),
@@ -1361,7 +1511,7 @@ class _HomeScreenState extends State<HomeScreen> {
         height: widget.compact ? 62 : 74,
         selectedIndex: _tab,
         onDestinationSelected: (index) {
-          if (index == 2) {
+          if (index == 3) {
             unawaited(_openMoviePlayer());
           } else {
             setState(() => _tab = index);
@@ -1370,9 +1520,10 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Theme.of(context).colorScheme.surface,
         indicatorColor: accent.withValues(alpha: .16),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.grid_view_rounded), selectedIcon: Icon(Icons.grid_view_rounded), label: 'Studio'),
+          NavigationDestination(icon: Icon(Icons.movie_creation_outlined), selectedIcon: Icon(Icons.movie_creation_rounded), label: 'Studio'),
+          NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder_rounded), label: 'Projects'),
           NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library_rounded), label: 'Tools'),
-          NavigationDestination(icon: Icon(Icons.play_circle_outline_rounded), selectedIcon: Icon(Icons.play_circle_fill_rounded), label: 'Movie Player'),
+          NavigationDestination(icon: Icon(Icons.play_circle_outline_rounded), selectedIcon: Icon(Icons.play_circle_fill_rounded), label: 'Player'),
           NavigationDestination(icon: Icon(Icons.tune_outlined), selectedIcon: Icon(Icons.tune_rounded), label: 'Settings'),
         ],
       ),
@@ -1409,9 +1560,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('STATUS HD', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 2.2)),
+                        Text('VYNTRA', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 2.2)),
                         SizedBox(height: 2),
-                        Text('Sharper WhatsApp Status. Your original is never changed.', style: TextStyle(color: Colors.white60, fontSize: 12)),
+                        Text('Video Editor & AI Studio', style: TextStyle(color: Colors.white60, fontSize: 12)),
                       ],
                     ),
                   ),
@@ -1422,28 +1573,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   IconButton(
                     tooltip: 'Media tools',
-                    onPressed: () => setState(() => _tab = 1),
+                    onPressed: () => setState(() => _tab = 2),
                     icon: const Icon(Icons.tune_rounded),
                   ),
                 ],
               ),
-              const SizedBox(height: 32),
-              Text('Status HD starts with a\nclip from your phone.', style: TextStyle(fontSize: widget.compact ? 30 : 36, height: 1.06, fontWeight: FontWeight.w800, letterSpacing: -1.15)),
+              const SizedBox(height: 22),
+              _studioHero(accent),
               const SizedBox(height: 12),
-              const Text('Choose a photo or video, preview it, then prepare a separate copy for Status. The source stays untouched.', style: TextStyle(color: Colors.white60, height: 1.55, fontSize: 14)),
-              const SizedBox(height: 18),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _featurePill(Icons.high_quality_rounded, 'Quality-ready', accent),
-                  _featurePill(Icons.lock_outline_rounded, 'Original preserved', accent),
-                  _featurePill(Icons.phone_android_rounded, 'Made for Status', accent),
-                ],
-              ),
-              const SizedBox(height: 18),
+              SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: () => setState(() => _tab = 1), icon: const Icon(Icons.add_rounded), label: const Text('New video project'))),
+              const SizedBox(height: 12),
               _qualityBanner(accent),
-              const SizedBox(height: 12),
 
               const SizedBox(height: 22),
               if (_selected == null)
@@ -1454,6 +1594,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 _mediaPreview(accent),
               ],
               if (_selected != null && !_isVideo) ...[
+                const SizedBox(height: 14),
+                _photoEditorControls(accent),
                 const SizedBox(height: 14),
                 SizedBox(
                   width: double.infinity,
@@ -1511,8 +1653,8 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 20),
               const Text('HOW IT WORKS', style: TextStyle(fontSize: 11, letterSpacing: 1.8, fontWeight: FontWeight.w800, color: Colors.white54)),
               const SizedBox(height: 12),
-              _stepRow('01', 'Choose a video', 'Status HD detects the source dimensions and format.', accent),
-              _stepRow('02', 'Process a new copy', 'Choose an output size; Status HD applies conventional picture enhancement and re-encodes the video on this device.', accent),
+              _stepRow('01', 'Choose a video', 'Vyntra detects the source dimensions and format.', accent),
+              _stepRow('02', 'Process a new copy', 'Choose an output size; Vyntra applies conventional picture enhancement and re-encodes the video on this device.', accent),
               _stepRow('03', 'Review the result', 'Watch the encoded preview here, then save or share the processed copy.', accent),
               const SizedBox(height: 14),
               const Text('Note: WhatsApp can still resize or recompress media after you share it.', style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.5)),
@@ -1522,6 +1664,29 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+
+  Widget _studioHero(Color accent) => Container(
+    padding: const EdgeInsets.all(22),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(28),
+      gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [accent.withValues(alpha:.22), Theme.of(context).colorScheme.surface, const Color(0xFF101319)]),
+      border: Border.all(color: accent.withValues(alpha:.28)),
+      boxShadow: [BoxShadow(color: accent.withValues(alpha:.08), blurRadius: 30, offset: const Offset(0, 12))],
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [Icon(Icons.auto_awesome_rounded, size: 16, color: accent), const SizedBox(width: 7), Text('LOCAL MEDIA STUDIO', style: TextStyle(color: accent, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.8))]),
+      const SizedBox(height: 14),
+      Text(_selected == null ? 'Make every frame\nready to share.' : 'Prepare your\n${_isVideo ? 'video' : 'photo'} for Status.', style: TextStyle(fontSize: widget.compact ? 28 : 32, height: 1.04, fontWeight: FontWeight.w900, letterSpacing: -1.1)),
+      const SizedBox(height: 10),
+      const Text('Choose media, make the edits you need, then review a separate copy. Your original stays untouched.', style: TextStyle(color: Colors.white70, height: 1.5, fontSize: 13)),
+      const SizedBox(height: 16),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        _featurePill(Icons.high_quality_rounded, 'Quality controls', accent),
+        _featurePill(Icons.lock_outline_rounded, 'Original preserved', accent),
+        _featurePill(Icons.phone_android_rounded, 'Made for Status', accent),
+      ]),
+    ]),
+  );
 
   bool _isPhotoOutput(XFile file) => file.path.toLowerCase().endsWith('.jpg') || file.path.toLowerCase().endsWith('.jpeg') || file.path.toLowerCase().endsWith('.png');
 
@@ -1535,7 +1700,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _watermarkFreeUnlocked = unlocked;
         _enhancedVideo = null;
         _message = unlocked
-            ? 'Reward earned. Process the video again to create a watermark-free copy.'
+            ? 'Reward earned. Process one video to use your watermark-free export.'
             : 'No rewarded ad was available or completed. You can still process and share a watermarked video.';
       });
     } catch (error) {
@@ -1549,8 +1714,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_exporting || _busy) return;
     setState(() { _exporting = true; _message = 'Preparing enhanced photo…'; _enhancedVideo = null; });
     try {
-      final output = '${Directory.systemTemp.path}/statushd_photo_${DateTime.now().microsecondsSinceEpoch}.jpg';
-      final result = await _photos.process(inputPath: file.path, outputPath: output, targetLongEdge: _targetLongEdge > 0 ? _targetLongEdge : null, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost);
+      final output = '${Directory.systemTemp.path}/vyntra_photo_${DateTime.now().microsecondsSinceEpoch}.jpg';
+      final ratio = switch (_photoRatio) { '1:1' => 1.0, '4:5' => 4 / 5, '9:16' => 9 / 16, '16:9' => 16 / 9, _ => null };
+      final result = await _photos.process(inputPath: file.path, outputPath: output, targetLongEdge: _targetLongEdge > 0 ? _targetLongEdge : null, brightness: _brightnessBoost, contrast: _contrastBoost, saturation: _saturationBoost, sharpness: _sharpnessBoost, aspectRatio: ratio, quarterTurns: _photoQuarterTurns);
       if (!mounted) return;
       setState(() { _enhancedVideo = XFile(result.path, mimeType: 'image/jpeg'); _message = 'Enhanced photo ready: ${result.width}×${result.height} · ${_formatBytes(result.bytes)}. Save or share the new copy.'; _enhanceProgress = 1; });
       unawaited(_recordExports([XFile(result.path, mimeType: 'image/jpeg')], 'Enhanced photo'));
@@ -1560,6 +1726,24 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) setState(() => _exporting = false);
     }
   }
+
+  Widget _photoEditorControls(Color accent) => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface, borderRadius: BorderRadius.circular(widget.rounded ? 22 : 12)),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [Icon(Icons.tune_rounded, color: widget.accent), const SizedBox(width: 9), const Expanded(child: Text('Photo framing', style: TextStyle(fontWeight: FontWeight.w800))),
+        IconButton(tooltip: 'Rotate photo 90 degrees', onPressed: _exporting ? null : () => setState(() { _photoQuarterTurns = (_photoQuarterTurns + 1) % 4; _enhancedVideo = null; }), icon: const Icon(Icons.rotate_90_degrees_cw_rounded)),
+      ]),
+      const SizedBox(height: 8),
+      SingleChildScrollView(scrollDirection: Axis.horizontal, child: SegmentedButton<String>(
+        segments: const [ButtonSegment(value: 'Original', label: Text('Original')), ButtonSegment(value: '1:1', label: Text('1:1')), ButtonSegment(value: '4:5', label: Text('4:5')), ButtonSegment(value: '9:16', label: Text('9:16')), ButtonSegment(value: '16:9', label: Text('16:9'))],
+        selected: {_photoRatio}, showSelectedIcon: false,
+        onSelectionChanged: _exporting ? null : (values) => setState(() { _photoRatio = values.first; _enhancedVideo = null; }),
+      )),
+      const SizedBox(height: 8),
+      const Text('Crop is centered. Rotate or choose a frame, then process a separate copy.', style: TextStyle(color: Colors.white60, fontSize: 11, height: 1.4)),
+    ]),
+  );
 
   Widget _whatsAppStatusPreset(Color accent) => Container(
     padding: const EdgeInsets.all(16),
@@ -1581,7 +1765,7 @@ class _HomeScreenState extends State<HomeScreen> {
       SizedBox(
         width: double.infinity,
         child: FilledButton.icon(
-          onPressed: _exporting ? null : _applyWhatsAppStatusPreset,
+          onPressed: _exporting || !Platform.isAndroid ? null : _applyWhatsAppStatusPreset,
           icon: const Icon(Icons.auto_awesome_rounded),
           label: const Text('Apply Status preset'),
         ),
@@ -1606,7 +1790,7 @@ class _HomeScreenState extends State<HomeScreen> {
       const SizedBox(height: 6),
       const Text('Quickly share a processed file again. Save important exports to your device; temporary workspace files may be cleared by Android.', style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.4)),
       const SizedBox(height: 8),
-      for (final entry in _recentExports.take(4))
+      for (final entry in _recentExports.take(12))
         FutureBuilder<bool>(
           future: File(entry['path']!).exists(),
           builder: (context, snapshot) {
@@ -1618,6 +1802,7 @@ class _HomeScreenState extends State<HomeScreen> {
               title: Text(entry['name']!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
               subtitle: Text(available ? entry['kind']! : 'Temporary file cleared', style: const TextStyle(fontSize: 11, color: Colors.white54)),
               trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(tooltip: 'Save export to device', onPressed: available ? () => _saveRecentExport(entry) : null, icon: const Icon(Icons.save_alt_rounded, size: 19)),
                 IconButton(tooltip: 'Share export', onPressed: available ? () => _shareRecentExport(entry) : null, icon: const Icon(Icons.ios_share_rounded, size: 19)),
                 IconButton(tooltip: 'Remove from recent exports', onPressed: () => _removeRecentExport(entry), icon: const Icon(Icons.close_rounded, size: 19)),
               ]),
@@ -1704,7 +1889,10 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 6),
           const Text('Original file • No forced compression', style: TextStyle(color: Colors.white54, fontSize: 12)),
           const SizedBox(height: 16),
-          FilledButton.icon(onPressed: _pickMedia, icon: const Icon(Icons.add_rounded), label: const Text('Choose from device')),
+          Wrap(alignment: WrapAlignment.center, spacing: 10, runSpacing: 8, children: [
+            FilledButton.icon(onPressed: _pickMedia, icon: const Icon(Icons.add_rounded), label: const Text('Choose media')),
+            OutlinedButton.icon(onPressed: _batchProcessPhotos, icon: const Icon(Icons.library_add_check_rounded), label: const Text('Batch media')),
+          ]),
         ],
       ),
     ),
@@ -1883,7 +2071,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   Text('Each app has its own door', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
                   SizedBox(height: 5),
-                  Text('Use Status HD for preparing media. Use Movie player for comfortable playback.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.45)),
+                  Text('Use Vyntra Studio to edit. Open Player for comfortable playback.', style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.45)),
                 ],
               ),
             ),
@@ -1901,9 +2089,9 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       _toolCard(
         icon: Icons.high_quality_rounded,
-        title: 'Status HD',
-        detail: 'Prepare photos and videos for WhatsApp Status without recompressing your originals. Preview the result before sharing.',
-        badge: 'STATUS HD',
+        title: 'Vyntra Studio',
+        detail: 'Edit, enhance, preview, and export video projects on your device.',
+        badge: 'VIDEO EDITOR',
         onTap: () {
           setState(() => _tab = 0);
           unawaited(_pickMedia());
@@ -1947,7 +2135,7 @@ class _HomeScreenState extends State<HomeScreen> {
             SizedBox(width: 12),
             Expanded(
               child: Text(
-                'A larger resolution is not the same as recovered detail. Status HD detects the source and lets you choose an export size; it does not claim AI restoration.',
+                'A larger resolution is not the same as recovered detail. Vyntra offers conventional enhancement and accurately labels its processing.',
                 style: TextStyle(color: Colors.white70, height: 1.45, fontSize: 12),
               ),
             ),
@@ -2020,12 +2208,17 @@ class _HomeScreenState extends State<HomeScreen> {
       _sectionTitle('MEDIA & PRIVACY'),
       const SizedBox(height: 10),
       _infoTile(Icons.high_quality_outlined, 'Video quality improvement', 'Choose 480p, 720p, 1080p or 1440p, tune brightness, contrast and colour, then preview the processed copy before saving. The original stays unchanged.'),
-      _infoTile(Icons.photo_library_outlined, 'Your library stays yours', 'Choose media in Status HD’s own library. Your files stay on this device and are never uploaded to a server.'),
+      _infoTile(Icons.photo_library_outlined, 'Your library stays yours', 'Choose media in Vyntra’s own library. Your files stay on this device and are never uploaded to a server.'),
       _infoTile(Icons.privacy_tip_outlined, 'No account required', 'No login or cloud account is needed for the current core workflow.'),
+      const SizedBox(height: 22),
+      _sectionTitle('STORAGE'),
+      const SizedBox(height: 10),
+      _infoTile(Icons.storage_rounded, 'Temporary exports', '${_temporaryExportCount()} available files · ${_formatBytes(_temporaryExportBytes())}. Files in temporary storage can be cleared by Android; save important copies to Gallery.'),
+      OutlinedButton.icon(onPressed: _clearTemporaryExports, icon: const Icon(Icons.delete_sweep_outlined), label: const Text('Remove temporary exports')),
       const SizedBox(height: 24),
       _sectionTitle('ABOUT'),
       const SizedBox(height: 10),
-      _infoTile(Icons.auto_awesome_outlined, 'Status HD', 'Version 1.0.0 · Flutter'),
+      _infoTile(Icons.auto_awesome_outlined, 'Vyntra — Video Editor & AI Studio', 'Version 1.0.0 · Flutter'),
       const SizedBox(height: 16),
       OutlinedButton.icon(
         onPressed: () => setState(() => _tab = 1),
@@ -2033,9 +2226,22 @@ class _HomeScreenState extends State<HomeScreen> {
         label: const Text('Open media tools'),
       ),
       const SizedBox(height: 18),
-      const Text('WhatsApp is a separate service and may compress media during upload. Status HD is not affiliated with WhatsApp.', style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.5)),
+      const Text('WhatsApp is a separate service and may compress media during upload. Vyntra is not affiliated with WhatsApp.', style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.5)),
     ],
   );
+
+  bool _isTemporaryExport(Map<String, String> entry) {
+    final path = entry['path']!.replaceAll('\\', '/');
+    final root = Directory.systemTemp.path.replaceAll('\\', '/');
+    return path.startsWith('$root/vyntra_');
+  }
+
+  int _temporaryExportCount() => _recentExports.where((entry) => _isTemporaryExport(entry) && File(entry['path']!).existsSync()).length;
+  int _temporaryExportBytes() => _recentExports.fold<int>(0, (total, entry) {
+    final file = File(entry['path']!);
+    if (!_isTemporaryExport(entry) || !file.existsSync()) return total;
+    try { return total + file.lengthSync(); } catch (_) { return total; }
+  });
 
   Widget _sectionTitle(String title) => Text(title, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.8, color: Colors.white54));
 

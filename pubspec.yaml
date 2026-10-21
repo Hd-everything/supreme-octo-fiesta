@@ -1,5 +1,5 @@
 name: statushd
-description: A customizable media preparation and sharing app for WhatsApp Status.
+description: Vyntra — Video Editor & AI Studio for on-device video editing.
 publish_to: "none"
 version: 1.0.0+1
 
@@ -38,6 +38,7 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
   assets:
+    - assets/app_icon.png
     - assets/models/espcn_x3.tflite
     - assets/models/espcn_quant_x3.tflite
     - assets/models/model_manifest.json

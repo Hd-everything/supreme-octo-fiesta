@@ -27,7 +27,7 @@ class ProcessingJob {
         id: json['id']?.toString() ?? '', inputPath: json['inputPath']?.toString() ?? '', outputPath: json['outputPath']?.toString() ?? '', operation: json['operation']?.toString() ?? 'video', createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? '') ?? DateTime.now(), state: ProcessingJobState.values.firstWhere((v) => v.name == json['state'], orElse: () => ProcessingJobState.failed), progress: (json['progress'] as num?)?.toDouble() ?? 0, message: json['message']?.toString() ?? '', error: json['error']?.toString());
 }
 
-/// Persistent queue shared by StatusHD and Movie Player. Native processing
+/// Persistent queue shared by Vyntra and Movie Player. Native processing
 /// remains the executor; this class owns lifecycle, recovery, and honest UI
 /// state so an interrupted job is never shown as completed.
 class ProcessingJobQueue extends ChangeNotifier {

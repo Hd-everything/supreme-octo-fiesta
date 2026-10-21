@@ -1,4 +1,4 @@
-name: Build Status HD
+name: Build Vyntra
 
 'on':
   push:
@@ -94,6 +94,10 @@ jobs:
 
           manifest = app / "src/main/AndroidManifest.xml"
           text = manifest.read_text()
+          if re.search(r'<application\b[^>]*\bandroid:label="[^"]*"', text):
+              text = re.sub(r'(<application\b[^>]*\bandroid:label=")[^"]*"', r'\1Vyntra"', text, count=1)
+          else:
+              text = re.sub(r'(<application\b)', r'\1 android:label="Vyntra"', text, count=1)
           if "xmlns:tools=" not in text:
               text = text.replace(
                   'xmlns:android="http://schemas.android.com/apk/res/android"',
@@ -127,7 +131,7 @@ jobs:
 
           printf '\nkotlin.jvm.target.validation.mode=warning\norg.gradle.vfs.watch=false\norg.gradle.daemon=false\n' >> /tmp/statushd/gradle.properties
 
-      - name: Copy StatusHD sources
+      - name: Copy Vyntra sources
         shell: bash
         run: |
           set -euo pipefail
@@ -294,7 +298,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v5
         with:
-          name: statushd-android-release
+          name: vyntra-android-release
           path: /tmp/statushd/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 1

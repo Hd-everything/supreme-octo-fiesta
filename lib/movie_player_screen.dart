@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -32,6 +33,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   late final Player _player;
   late final VideoController _video;
   final TextEditingController _search = TextEditingController();
+  final Map<String, Future<Uint8List?>> _thumbnailCache = <String, Future<Uint8List?>>{};
   List<Map<String,String>> _videos = [];
   List<OutputHistoryEntry> _outputs = <OutputHistoryEntry>[];
   List<Map<String,String>> _recent = [];
@@ -64,6 +66,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     _processingProgressSubscription = _processing.progress.listen((percent) {
       if (mounted && _enhancing) setState(() => _processingPercent = percent);
     });
+    _jobs.addListener(_onJobsChanged);
     // Load libmpv only when the dedicated movie player is opened. Initializing
     // it before runApp can delay the first Flutter frame on slower devices.
     MediaKit.ensureInitialized();
@@ -81,6 +84,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   @override
   void dispose() {
+    _jobs.removeListener(_onJobsChanged);
     _processingProgressSubscription?.cancel();
     _jobs.dispose();
     _hideTimer?.cancel();
@@ -89,6 +93,15 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
     _search.dispose();
     unawaited(_player.dispose());
     super.dispose();
+  }
+
+  void _onJobsChanged() { if (mounted) setState(() {}); }
+
+  Future<Uint8List?> _thumbnail(String path) {
+    if (!_thumbnailCache.containsKey(path) && _thumbnailCache.length >= 64) return Future.value(null);
+    return _thumbnailCache.putIfAbsent(path, () async {
+      try { return await _channel.invokeMethod<Uint8List>('videoThumbnail', {'path': path}); } catch (_) { return null; }
+    });
   }
 
   String _resumeKey(String path) => 'movie_resume_${Uri.encodeComponent(path)}';
@@ -165,7 +178,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         if (item is Map) {
           final path = item['path']?.toString() ?? '';
           final name = item['name']?.toString() ?? '';
-          if (path.isNotEmpty && name.isNotEmpty) next.add({'path':path,'name':name});
+          if (path.isNotEmpty && name.isNotEmpty) next.add({'path':path,'name':name,'size':item['size']?.toString() ?? '0','duration':item['duration']?.toString() ?? '0','modified':item['modified']?.toString() ?? '0'});
         }
       }
       for (final entry in _outputs) {
@@ -315,7 +328,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(children:[
-              Container(width:76,height:68,decoration:BoxDecoration(gradient:LinearGradient(colors:[_accent.withValues(alpha:.35),const Color(0xFF252832)]),borderRadius:BorderRadius.circular(12)),child:Icon(recent?Icons.history_rounded:Icons.movie_creation_outlined,size:30,color:_accent)),
+              ClipRRect(borderRadius:BorderRadius.circular(12),child:SizedBox(width:76,height:68,child:Stack(fit:StackFit.expand,children:[_thumbnailView(movie['path'] ?? ''),if(recent) const Align(alignment:Alignment.bottomRight,child:Padding(padding:EdgeInsets.all(4),child:Icon(Icons.history_rounded,size:18,color:Colors.white)))]))),
               const SizedBox(width:12),
               Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
                 Text(name,maxLines:2,overflow:TextOverflow.ellipsis,style:const TextStyle(fontWeight:FontWeight.w700,fontSize:14)),
@@ -349,7 +362,12 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       };
       return tabMatch && (_sortBy != 'Favorites' || _favorites.contains(path)) && (v['name']??'').toLowerCase().contains(q);
     }).toList()
-      ..sort((a, b) => _sortBy == 'Name' ? (a['name'] ?? '').compareTo(b['name'] ?? '') : 0);
+      ..sort((a, b) => switch (_sortBy) {
+        'Name' => (a['name'] ?? '').toLowerCase().compareTo((b['name'] ?? '').toLowerCase()),
+        'Largest' => (int.tryParse(b['size'] ?? '') ?? 0).compareTo(int.tryParse(a['size'] ?? '') ?? 0),
+        'Longest' => (int.tryParse(b['duration'] ?? '') ?? 0).compareTo(int.tryParse(a['duration'] ?? '') ?? 0),
+        _ => (int.tryParse(b['modified'] ?? '') ?? 0).compareTo(int.tryParse(a['modified'] ?? '') ?? 0),
+      });
     return Stack(children:[RefreshIndicator(
       onRefresh: _scan,
       child: ListView(padding:EdgeInsets.fromLTRB(18,10,18,_hasMedia ? 112 : 28),children:[
@@ -362,7 +380,7 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
             Text('Your cinema,\non your device.',style:TextStyle(fontSize:25,height:1.02,fontWeight:FontWeight.w900,letterSpacing:-.8)),
           ])),
           IconButton(tooltip: _gridView ? 'List view' : 'Grid view', onPressed: () => setState(() => _gridView = !_gridView), icon: Icon(_gridView ? Icons.view_list_rounded : Icons.grid_view_rounded)),
-          PopupMenuButton<String>(onSelected:(value)=>setState(()=>_sortBy=value),itemBuilder:(_)=>const [PopupMenuItem(value:'Recent',child:Text('Sort: device order')),PopupMenuItem(value:'Name',child:Text('Sort: name')),PopupMenuItem(value:'Favorites',child:Text('Show favorites'))],icon:const Icon(Icons.sort_rounded)),
+          PopupMenuButton<String>(tooltip:'Sort videos',onSelected:(value)=>setState(()=>_sortBy=value),itemBuilder:(_)=>const [PopupMenuItem(value:'Recent',child:Text('Recently added')),PopupMenuItem(value:'Name',child:Text('Name')),PopupMenuItem(value:'Largest',child:Text('Largest file')),PopupMenuItem(value:'Longest',child:Text('Longest video'))],icon:const Icon(Icons.sort_rounded)),
         ]),
         const SizedBox(height:17),
         TextField(controller:_search,onChanged:(_)=>setState((){}),decoration:InputDecoration(hintText:'Search videos',prefixIcon:const Icon(Icons.search_rounded),filled:true,fillColor:const Color(0xFF17181D),border:OutlineInputBorder(borderRadius:BorderRadius.circular(16),borderSide:BorderSide.none))),
@@ -373,6 +391,18 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         if(_recent.isNotEmpty) ...[
           _section('Continue watching',trailing:Text('${_recent.length} recent',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
           for(final movie in _recent.take(3)) _posterRow(movie,recent:true),
+        ],
+        if (_jobs.jobs.isNotEmpty) ...[
+          _section('Processing activity', trailing: Text('${_jobs.jobs.length} jobs', style: TextStyle(color: _accent, fontSize: 12, fontWeight: FontWeight.w700))),
+          for (final job in _jobs.jobs.take(4)) Card(
+            margin: const EdgeInsets.only(bottom: 8),
+            child: ListTile(
+              leading: Icon(job.state == ProcessingJobState.complete ? Icons.check_circle_outline_rounded : job.state == ProcessingJobState.failed ? Icons.error_outline_rounded : job.state == ProcessingJobState.paused ? Icons.pause_circle_outline_rounded : Icons.hourglass_top_rounded, color: job.state == ProcessingJobState.failed ? Theme.of(context).colorScheme.error : _accent),
+              title: Text(job.operation == 'crop' ? 'Video crop' : 'Video enhancement', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+              subtitle: Text(job.error ?? job.message, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+              trailing: IconButton(tooltip: 'Remove job from activity', onPressed: () => _jobs.remove(job.id), icon: const Icon(Icons.close_rounded)),
+            ),
+          ),
         ],
         _section('Your library',trailing:Text(_scanning?'Scanning…':'${filtered.length} videos',style:TextStyle(color:_accent,fontSize:12,fontWeight:FontWeight.w700))),
         if (_scanning) const LinearProgressIndicator(),
@@ -396,13 +426,21 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       child: InkWell(
         onTap: _opening ? null : () => _open(path, movie['name'] ?? 'Video'),
         child: Stack(children: [
-          Positioned.fill(child: Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [_accent.withValues(alpha: .48), const Color(0xFF20232B), Colors.black])), child: Icon(Icons.movie_rounded, size: 38, color: Colors.white.withValues(alpha: .78)))),
+          Positioned.fill(child: _thumbnailView(path)),
+          Positioned.fill(child: DecoratedBox(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black.withValues(alpha:.82)], stops: const [0.35,1])))),
           Positioned(left: 10, right: 10, bottom: 8, child: Text(movie['name'] ?? 'Video', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12))),
           Positioned(top: 4, right: 4, child: IconButton(onPressed: () => _toggleFavorite(path), icon: Icon(favorite ? Icons.star_rounded : Icons.star_border_rounded, color: favorite ? _accent : Colors.white70, size: 19))),
         ]),
       ),
     );
   }
+
+  Widget _thumbnailView(String path) => FutureBuilder<Uint8List?>(
+    future: _thumbnail(path),
+    builder: (context, snapshot) => snapshot.data == null
+      ? Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [_accent.withValues(alpha:.42), const Color(0xFF20232B), Colors.black])), child: Icon(Icons.movie_rounded, size: 34, color: Colors.white.withValues(alpha:.78)))
+      : Image.memory(snapshot.data!, fit: BoxFit.cover, gaplessPlayback: true),
+  );
 
   Widget _miniPlayer() => Material(
     color: const Color(0xFF17181D),

@@ -3,10 +3,12 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import '../../models/edit_project.dart';
+
 import 'super_resolution_model.dart';
 import 'processing_job_queue.dart';
 
-/// Typed contract shared by StatusHD Studio and Movie Player. UI code never
+/// Typed contract shared by Vyntra Studio and Movie Player. UI code never
 /// builds native filter arguments directly.
 class VideoMetadata {
   const VideoMetadata({
@@ -92,10 +94,9 @@ class CropConfiguration {
 }
 
 class ProcessingRequest {
-  const ProcessingRequest.enhance({required this.inputPath, required this.outputPath, required this.metadata, required this.enhancement})
-      : crop = null;
+  const ProcessingRequest.enhance({required this.inputPath, required this.outputPath, required this.metadata, required this.enhancement, this.crop, this.startMs, this.endMs});
 
-  const ProcessingRequest.crop({required this.inputPath, required this.outputPath, required this.metadata, required this.crop})
+  const ProcessingRequest.crop({required this.inputPath, required this.outputPath, required this.metadata, required this.crop, this.startMs, this.endMs})
       : enhancement = null;
 
   final String inputPath;
@@ -103,6 +104,8 @@ class ProcessingRequest {
   final VideoMetadata metadata;
   final EnhancementConfiguration? enhancement;
   final CropConfiguration? crop;
+  final int? startMs;
+  final int? endMs;
 
   bool get isEnhancement => enhancement != null;
 }
@@ -177,6 +180,10 @@ class VideoProcessingService {
     if (!request.metadata.isValid) throw const ProcessingValidationException('The source dimensions are not supported.');
     if (request.metadata.duration.inMilliseconds <= 0) throw const ProcessingValidationException('The source duration could not be read.');
     if (!File(request.inputPath).existsSync()) throw const ProcessingValidationException('The source video is no longer available.');
+    if ((request.startMs == null) != (request.endMs == null) ||
+        (request.startMs != null && (request.startMs! < 0 || request.endMs! <= request.startMs! || request.endMs! > request.metadata.duration.inMilliseconds))) {
+      throw const ProcessingValidationException('The selected trim range is outside the source video.');
+    }
     if (request.enhancement case final config?) {
       if (config.brightness < -.25 || config.brightness > .25 || config.contrast < -.3 || config.contrast > .3 || config.saturation < -20 || config.saturation > 30 || config.sharpness < 0 || config.sharpness > .5) {
         throw const ProcessingValidationException('One or more picture adjustments are outside the supported range.');
@@ -200,6 +207,9 @@ class VideoProcessingService {
       'operation': request.isEnhancement ? 'enhance' : 'crop',
       'reportProgress': true,
     };
+    if (request.startMs != null && request.endMs != null) {
+      payload.addAll({'startMs': request.startMs!, 'endMs': request.endMs!});
+    }
     if (request.enhancement case final config?) {
       final size = config.outputWidth != null && config.outputHeight != null
           ? (width: config.outputWidth!, height: config.outputHeight!)
@@ -233,6 +243,26 @@ class VideoProcessingService {
       await _jobs?.update(jobId, state: ProcessingJobState.failed, message: 'Processing failed', error: error.toString());
       rethrow;
     }
+  }
+
+  Future<String> exportProject({required List<EditClip> clips, required String outputPath}) async {
+    if (clips.isEmpty || clips.length > 24) throw const ProcessingValidationException('A project must contain between 1 and 24 video clips.');
+    for (final clip in clips) {
+      if (clip.path.isEmpty || !File(clip.path).existsSync() || clip.startMs < 0 || clip.endMs <= clip.startMs || clip.endMs > clip.durationMs) {
+        throw const ProcessingValidationException('A project clip is missing or has an invalid trim range.');
+      }
+    }
+    _installProgressHandler();
+    final output = await _channel.invokeMapMethod<String, dynamic>('exportProject', {
+      'clips': clips.map((clip) => {'path': clip.path, 'startMs': clip.startMs, 'endMs': clip.endMs}).toList(),
+      'outputPath': outputPath,
+      'reportProgress': true,
+    });
+    final path = output?['path']?.toString();
+    if (path == null || !File(path).existsSync() || await File(path).length() == 0) {
+      throw const ProcessingValidationException('Project export did not create a playable output file.');
+    }
+    return path;
   }
 
   Future<ProcessingResult> processNeural({required String inputPath, required String outputPath, required VideoMetadata metadata, required int outputWidth, required int outputHeight}) async {

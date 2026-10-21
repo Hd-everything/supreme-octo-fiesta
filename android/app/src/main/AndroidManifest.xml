@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-    <application android:label="Status HD" android:theme="@style/AppTheme" android:usesCleartextTraffic="false">
+    <application android:label="Vyntra" android:icon="@drawable/vyntra_icon" android:theme="@style/AppTheme" android:usesCleartextTraffic="false">
         <meta-data android:name="flutterEmbedding" android:value="2" />
         <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-8529698532324480~6965542136" />
         <provider

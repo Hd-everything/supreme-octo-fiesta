@@ -24,6 +24,8 @@ import android.text.SpannableString
 import android.text.style.ForegroundColorSpan
 import android.graphics.Color
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Composition
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
@@ -35,6 +37,7 @@ import android.os.Looper
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.FileInputStream
+import java.io.ByteArrayOutputStream
 import kotlin.math.abs
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -99,6 +102,26 @@ class MainActivity : FlutterActivity() {
                 }
                 return@setMethodCallHandler
             }
+            if (call.method == "videoThumbnail") {
+                val path = call.argument<String>("path")
+                val timeMs = call.argument<Long>("timeMs") ?: 1000L
+                if (path.isNullOrBlank() || !File(path).isFile) { result.success(null); return@setMethodCallHandler }
+                Thread {
+                    val bytes = try {
+                        val retriever = MediaMetadataRetriever()
+                        try {
+                            retriever.setDataSource(path)
+                            val bitmap = retriever.getFrameAtTime(timeMs.coerceAtLeast(0) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            bitmap?.let { frame ->
+                                try { ByteArrayOutputStream().use { stream -> frame.compress(android.graphics.Bitmap.CompressFormat.JPEG, 76, stream); stream.toByteArray() } }
+                                finally { frame.recycle() }
+                            }
+                        } finally { retriever.release() }
+                    } catch (_: Exception) { null }
+                    runOnUiThread { result.success(bytes) }
+                }.start()
+                return@setMethodCallHandler
+            }
             if (call.method == "cancelProcessing") {
                 val transformer = activeTransformer
                 if (transformer == null) result.success(false)
@@ -140,9 +163,22 @@ class MainActivity : FlutterActivity() {
                         result.error("unsupported_output", "This output size is not supported on this device.", null)
                         return@setMethodCallHandler
                     }
+                    val cropRatio = call.argument<Number>("cropAspectRatio")?.toDouble() ?: 0.0
+                    if (cropRatio > 0.0) {
+                        val sourceWidth = source["width"] as Int
+                        val sourceHeight = source["height"] as Int
+                        val sourceRatio = sourceWidth.toDouble() / sourceHeight.toDouble()
+                        val cropX = (call.argument<Number>("cropX")?.toFloat() ?: 0f).coerceIn(0f, 1f)
+                        val cropY = (call.argument<Number>("cropY")?.toFloat() ?: 0f).coerceIn(0f, 1f)
+                        val cropWidth = (call.argument<Number>("cropWidth")?.toFloat() ?: 1f).coerceIn(0.01f, 1f - cropX)
+                        val cropHeight = (call.argument<Number>("cropHeight")?.toFloat() ?: 1f).coerceIn(0.01f, 1f - cropY)
+                        if (kotlin.math.abs(sourceRatio - cropRatio) > 0.0001 || cropX > 0f || cropY > 0f || cropWidth < 0.9999f || cropHeight < 0.9999f) {
+                            effects.add(Crop(cropX * 2f - 1f, (cropX + cropWidth) * 2f - 1f, 1f - (cropY + cropHeight) * 2f, 1f - cropY * 2f))
+                        }
+                    }
                     effects.addAll(listOf(Brightness(brightness), Contrast(contrast), HslAdjustment.Builder().adjustSaturation(saturation).build(), DetailSharpenEffect(sharpness), LanczosResample.scaleToFit(outputWidth, outputHeight), Presentation.createForWidthAndHeight(outputWidth, outputHeight, Presentation.LAYOUT_SCALE_TO_FIT)))
                     if (call.argument<Boolean>("watermark") != false) {
-                        val label = SpannableString("statushd")
+                        val label = SpannableString("Vyntra")
                         label.setSpan(ForegroundColorSpan(Color.WHITE), 0, label.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                         effects.add(OverlayEffect(listOf(TextOverlay.createStaticTextOverlay(label))))
                     }
@@ -175,7 +211,23 @@ class MainActivity : FlutterActivity() {
                 val outputFile = File(outputPath)
                 outputFile.parentFile?.mkdirs()
                 outputFile.delete()
-                val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(File(inputPath)))).setEffects(Effects(emptyList(), effects)).build()
+                val startMs = call.argument<Number>("startMs")?.toLong()
+                val endMs = call.argument<Number>("endMs")?.toLong()
+                val durationMs = source["durationMs"] as Long
+                val invalidTrim = when {
+                    startMs == null && endMs == null -> false
+                    startMs == null || endMs == null -> true
+                    else -> startMs < 0 || endMs <= startMs || endMs > durationMs
+                }
+                if (invalidTrim) {
+                    result.error("invalid_trim", "Choose a valid video trim range.", null)
+                    return@setMethodCallHandler
+                }
+                val mediaItemBuilder = MediaItem.Builder().setUri(Uri.fromFile(File(inputPath)))
+                if (startMs != null && endMs != null) {
+                    mediaItemBuilder.setClippingConfiguration(MediaItem.ClippingConfiguration.Builder().setStartPositionMs(startMs).setEndPositionMs(endMs).build())
+                }
+                val item = EditedMediaItem.Builder(mediaItemBuilder.build()).setEffects(Effects(emptyList(), effects)).build()
                 val progressHandler = Handler(Looper.getMainLooper())
                 val progressHolder = ProgressHolder()
                 lateinit var transformer: Transformer
@@ -210,6 +262,82 @@ class MainActivity : FlutterActivity() {
                     if (reportProgress) progressHandler.post(progressPoll)
                 }
                 catch (error: Exception) { activeTransformer = null; outputFile.delete(); result.error("processing_start_failed", error.message ?: "Could not start processing.", null) }
+                return@setMethodCallHandler
+            }
+            if (call.method == "exportProject") {
+                val outputPath = call.argument<String>("outputPath")
+                val rawClips = call.argument<List<Map<String, Any>>>("clips")
+                val reportProgress = call.argument<Boolean>("reportProgress") == true
+                if (outputPath.isNullOrBlank() || rawClips.isNullOrEmpty() || rawClips.size > 24) {
+                    result.error("invalid_project", "Choose a project with 1 to 24 video clips.", null)
+                    return@setMethodCallHandler
+                }
+                if (activeTransformer != null) {
+                    result.error("processing_busy", "Another video is already processing.", null)
+                    return@setMethodCallHandler
+                }
+                val editedItems = try {
+                    rawClips.map { clip ->
+                        val path = clip["path"]?.toString() ?: throw IllegalArgumentException("A project clip has no source path.")
+                        if (!File(path).isFile) throw IllegalArgumentException("A project source file is no longer available: ${File(path).name}")
+                        val startMs = (clip["startMs"] as? Number)?.toLong() ?: 0L
+                        val endMs = (clip["endMs"] as? Number)?.toLong() ?: 0L
+                        val durationMs = (inspectVideo(path)["durationMs"] as Number).toLong()
+                        if (startMs < 0 || endMs <= startMs || endMs > durationMs) throw IllegalArgumentException("A project clip has an invalid trim range.")
+                        val mediaItem = MediaItem.Builder()
+                            .setUri(Uri.fromFile(File(path)))
+                            .setClippingConfiguration(MediaItem.ClippingConfiguration.Builder().setStartPositionMs(startMs).setEndPositionMs(endMs).build())
+                            .build()
+                        EditedMediaItem.Builder(mediaItem).build()
+                    }
+                } catch (error: Exception) {
+                    result.error("invalid_project_clip", error.message ?: "Could not read a project clip.", null)
+                    return@setMethodCallHandler
+                }
+                val outputFile = File(outputPath)
+                outputFile.parentFile?.mkdirs()
+                outputFile.delete()
+                val composition = Composition.Builder(EditedMediaItemSequence(editedItems)).build()
+                val progressHandler = Handler(Looper.getMainLooper())
+                val progressHolder = ProgressHolder()
+                lateinit var transformer: Transformer
+                lateinit var progressPoll: Runnable
+                progressPoll = object : Runnable {
+                    override fun run() {
+                        if (activeTransformer !== transformer) return
+                        if (transformer.getProgress(progressHolder) == Transformer.PROGRESS_STATE_AVAILABLE) {
+                            mediaChannel.invokeMethod("processingProgress", progressHolder.progress)
+                        }
+                        progressHandler.postDelayed(this, 500)
+                    }
+                }
+                transformer = Transformer.Builder(this)
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .addListener(object : Transformer.Listener {
+                        override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                            progressHandler.removeCallbacks(progressPoll)
+                            activeTransformer = null
+                            if (reportProgress) mediaChannel.invokeMethod("processingProgress", 100)
+                            if (outputFile.isFile && outputFile.length() > 0L) result.success(mapOf("path" to outputFile.absolutePath))
+                            else { outputFile.delete(); result.error("output_missing", "Project export completed without a usable file.", null) }
+                        }
+                        override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                            progressHandler.removeCallbacks(progressPoll)
+                            activeTransformer = null
+                            outputFile.delete()
+                            result.error("project_export_failed", exportException.message ?: "This device could not export the project.", null)
+                        }
+                    }).build()
+                activeTransformer = transformer
+                try {
+                    transformer.start(composition, outputFile.absolutePath)
+                    if (reportProgress) progressHandler.post(progressPoll)
+                } catch (error: Exception) {
+                    activeTransformer = null
+                    outputFile.delete()
+                    result.error("project_export_start_failed", error.message ?: "Could not start project export.", null)
+                }
                 return@setMethodCallHandler
             }
             if (call.method == "processNeuralVideo") {
@@ -309,7 +437,7 @@ class MainActivity : FlutterActivity() {
             }
             if (call.method == "saveVideoToGallery") {
                 val inputPath = call.argument<String>("inputPath")
-                val displayName = call.argument<String>("displayName") ?: "StatusHD_${System.currentTimeMillis()}.mp4"
+                val displayName = call.argument<String>("displayName") ?: "Vyntra_${System.currentTimeMillis()}.mp4"
                 if (inputPath.isNullOrBlank() || !File(inputPath).isFile) {
                     result.error("invalid_input", "The exported video could not be found.", null)
                     return@setMethodCallHandler
@@ -476,7 +604,7 @@ class MainActivity : FlutterActivity() {
             if (grantResults.isNotEmpty() && grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED }) {
                 try { callback.success(queryDeviceMedia()) }
                 catch (error: Exception) { callback.error("media_query_failed", error.message ?: "Could not scan device media.", null) }
-            } else { callback.success(emptyList<Map<String, Any>>()) }
+            } else { callback.error("permission_denied", "Allow Photos and videos access in Android settings, then try again.", null) }
             return
         }
         if (requestCode != videoLibraryRequestCode) return
@@ -485,7 +613,7 @@ class MainActivity : FlutterActivity() {
         if (grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             try { callback.success(queryDeviceVideos()) }
             catch (error: Exception) { callback.error("media_query_failed", error.message ?: "Could not scan device videos.", null) }
-        } else { callback.success(emptyList<Map<String, Any>>()) }
+        } else { callback.error("permission_denied", "Allow video access in Android settings, then try again.", null) }
     }
 
     private fun queryDeviceVideos(): List<Map<String, Any>> {
@@ -591,7 +719,7 @@ class MainActivity : FlutterActivity() {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, (if (isPhoto) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES) + "/Status HD")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, (if (isPhoto) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES) + "/Vyntra")
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val collection = if (isPhoto) MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) else MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -625,9 +753,8 @@ class MainActivity : FlutterActivity() {
                     formats.add(format)
                 }
             }
-            if (sourceTracks.none { (extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME) ?: "").startsWith("video/") }) {
-                throw IllegalArgumentException("No video track was found.")
-            }
+            val videoTrack = sourceTracks.firstOrNull { (extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME) ?: "").startsWith("video/") }
+                ?: throw IllegalArgumentException("No video track was found.")
             File(outputPath).parentFile?.mkdirs()
             File(outputPath).delete()
             muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -638,6 +765,19 @@ class MainActivity : FlutterActivity() {
             }
             muxer.start()
             extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            var syncStartUs: Long? = null
+            while (extractor.sampleTrackIndex >= 0) {
+                val time = extractor.sampleTime
+                if (time < 0 || time > startUs) break
+                if (extractor.sampleTrackIndex == videoTrack && extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+                    syncStartUs = time
+                    break
+                }
+                if (!extractor.advance()) break
+            }
+            val clipStartUs = syncStartUs
+                ?: throw IllegalArgumentException("No preceding video keyframe was found for this clip boundary.")
+            extractor.seekTo(clipStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             val maxSampleSize = formats.mapNotNull { format ->
                 if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) else null
             }.maxOrNull() ?: 0
@@ -649,13 +789,13 @@ class MainActivity : FlutterActivity() {
                 if (track < 0) break
                 val time = extractor.sampleTime
                 if (time < 0 || time >= endUs) break
-                if (time >= startUs && trackMap.containsKey(track)) {
+                if (time >= clipStartUs && trackMap.containsKey(track)) {
                     buffer.clear()
                     val size = extractor.readSampleData(buffer, 0)
                     if (size < 0) break
                     info.offset = 0
                     info.size = size
-                    info.presentationTimeUs = time - startUs
+                    info.presentationTimeUs = time - clipStartUs
                     info.flags = extractor.sampleFlags
                     muxer.writeSampleData(trackMap[track]!!, buffer, info)
                     copied++
