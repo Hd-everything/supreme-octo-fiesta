@@ -1135,6 +1135,23 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                   const SizedBox(width: 8),
                   const Expanded(child: Text('TIMELINE', style: TextStyle(fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w900))),
                   Text('${_project.clips.length} clips · ${_time(_project.durationMs)}', style: const TextStyle(fontSize: 10, color: Colors.white54)),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: 'Undo edit',
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+                    padding: EdgeInsets.zero,
+                    onPressed: _undo.isEmpty || _exporting ? null : _undoEdit,
+                    icon: const Icon(Icons.undo_rounded, size: 17),
+                  ),
+                  IconButton(
+                    tooltip: 'Redo edit',
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+                    padding: EdgeInsets.zero,
+                    onPressed: _redo.isEmpty || _exporting ? null : _redoEdit,
+                    icon: const Icon(Icons.redo_rounded, size: 17),
+                  ),
                   const SizedBox(width: 5),
                   const Icon(Icons.zoom_out_rounded, size: 15, color: Colors.white54),
                   SizedBox(width: 74, child: Slider(
