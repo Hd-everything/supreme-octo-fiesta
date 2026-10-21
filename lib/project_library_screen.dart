@@ -161,12 +161,19 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                           MaterialPageRoute(builder: (_) => StatusHdScreen(preferences: widget.preferences)),
                         ),
                         icon: const Icon(Icons.high_quality_rounded),
-                        label: const Text('Status HD · Optimize & export', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+                        label: const Text('Status HD · Quick export', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: accent,
                           side: BorderSide(color: accent.withValues(alpha: .45)),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                         ),
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8, left: 4, right: 4),
+                      child: Text(
+                        'A separate, one-video workflow for quick status-ready exports. Your full editing projects stay below.',
+                        style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
                       ),
                     ),
                     const SizedBox(height: 28),
