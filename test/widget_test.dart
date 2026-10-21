@@ -5,40 +5,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('Vyntra opens with the studio and navigation', (tester) async {
+  testWidgets('Vyntra opens the redesigned project studio', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();
-    await tester.pumpWidget(StatusHdApp(preferences: preferences));
+    await tester.pumpWidget(VyntraApp(preferences: preferences));
     await tester.pumpAndSettle();
 
     expect(find.text('VYNTRA'), findsOneWidget);
-    expect(find.text('Make every frame\nready to share.'), findsOneWidget);
-    expect(find.text('LOCAL MEDIA STUDIO'), findsOneWidget);
-    expect(find.text('Studio'), findsOneWidget);
-    expect(find.text('Projects'), findsOneWidget);
-    expect(find.text('Tools'), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
-    expect(find.byTooltip('Open movie player'), findsOneWidget);
-    expect(find.text('Player'), findsOneWidget);
-
-    await tester.scrollUntilVisible(find.text('Batch media'), 250);
-    expect(find.text('Batch media'), findsOneWidget);
-
-    await tester.tap(find.text('Tools'));
-    await tester.pumpAndSettle();
-    expect(find.text('Tools'), findsWidgets);
-    expect(find.text('Player'), findsWidgets);
-    expect(find.text('Vyntra Studio'), findsWidgets);
-
-    // The trim/split card is lower in the scrollable tools list and may not
-    // be mounted until it is brought into view.
-    final trimSplit = find.text('Trim & split');
-    await tester.scrollUntilVisible(trimSplit, 300);
-    expect(trimSplit, findsOneWidget);
-
-    expect(find.text('Theme mode'), findsNothing);
-    expect(find.text('Navigation style'), findsNothing);
+    expect(find.text('Make something\nworth watching.'), findsOneWidget);
+    expect(find.text('Your projects'), findsOneWidget);
+    expect(find.text('Create new project'), findsOneWidget);
+    expect(find.text('Your timeline is waiting'), findsOneWidget);
     expect(find.text('Appearance'), findsNothing);
-    expect(find.text('AMOLED black'), findsNothing);
+    expect(find.text('Navigation style'), findsNothing);
   });
 }
