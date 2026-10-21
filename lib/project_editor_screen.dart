@@ -183,7 +183,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                 const SizedBox(height: 12),
                 Row(children: [
                   const SizedBox(width: 72, child: Text('Size')),
-                  Expanded(child: Slider(min: 16, max: 96, value: fontSize.clamp(16, 96), onChanged: (value) => updateDialog(() => fontSize = value))),
+                  Expanded(child: Slider(min: 16, max: 96, value: fontSize.clamp(16, 96).toDouble(), onChanged: (value) => updateDialog(() => fontSize = value))),
                   Text(fontSize.round().toString()),
                 ]),
                 const SizedBox(height: 6),
@@ -201,18 +201,18 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                 const SizedBox(height: 12),
                 Row(children: [
                   const SizedBox(width: 72, child: Text('Horizontal')),
-                  Expanded(child: Slider(min: -1, max: 1, value: x.clamp(-1, 1), onChanged: (value) => updateDialog(() => x = value))),
+                  Expanded(child: Slider(min: -1, max: 1, value: x.clamp(-1, 1).toDouble(), onChanged: (value) => updateDialog(() => x = value))),
                 ]),
                 Row(children: [
                   const SizedBox(width: 72, child: Text('Vertical')),
-                  Expanded(child: Slider(min: -1, max: 1, value: y.clamp(-1, 1), onChanged: (value) => updateDialog(() => y = value))),
+                  Expanded(child: Slider(min: -1, max: 1, value: y.clamp(-1, 1).toDouble(), onChanged: (value) => updateDialog(() => y = value))),
                 ]),
                 const SizedBox(height: 10),
                 const Text('VISIBLE TIMELINE RANGE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.1)),
                 RangeSlider(
                   min: 0,
                   max: duration,
-                  values: RangeValues(startMs.clamp(0, duration), endMs.clamp(0, duration)),
+                  values: RangeValues(startMs.clamp(0, duration).toDouble(), endMs.clamp(0, duration).toDouble()),
                   labels: RangeLabels(_time(startMs.round()), _time(endMs.round())),
                   onChanged: (range) => updateDialog(() {
                     startMs = range.start;
@@ -598,7 +598,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
           id: DateTime.now().microsecondsSinceEpoch.toString(),
           text: title.trim(),
           startMs: 0,
-          endMs: edited.fold<int>(0, (sum, item) => sum + item.lengthMs).clamp(1, 5000),
+          endMs: edited.fold<int>(0, (sum, item) => sum + item.lengthMs).clamp(1, 5000).toInt(),
           fontSize: 36,
           y: .48,
         ));
