@@ -40,6 +40,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   bool _watchingRewardedAd = false;
   bool _previewingExport = false;
   double _progress = 0;
+  double _timelineZoom = 1.0;
   String? _exportPath;
   StreamSubscription<int>? _progressSubscription;
   bool _seekingToRangeStart = false;
@@ -598,7 +599,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
           id: DateTime.now().microsecondsSinceEpoch.toString(),
           text: title.trim(),
           startMs: 0,
-          endMs: edited.fold<int>(0, (sum, item) => sum + item.lengthMs).clamp(1, 5000).toInt(),
+          endMs: edited.fold<int>(0, (sum, item) => sum + item.lengthMs).clamp(1, edited.fold<int>(0, (sum, item) => sum + item.lengthMs)).toInt(),
           fontSize: 36,
           y: .48,
         ));
@@ -758,14 +759,25 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                     ),
                 ]),
                 const SizedBox(height: 8),
-                Align(alignment: Alignment.centerRight, child: TextButton.icon(
-                  onPressed: _exporting ? null : () {
-                    _updateSelectedClip(clip.copyWith(brightness: 0, contrast: 0, saturation: 0));
-                    updateSheet(() {});
-                  },
-                  icon: const Icon(Icons.restart_alt_rounded, size: 17),
-                  label: const Text('Reset picture'),
-                )),
+                Wrap(spacing: 8, runSpacing: 4, children: [
+                  TextButton.icon(
+                    onPressed: _exporting ? null : () {
+                      final updated = _project.clips.map((item) => item.copyWith(brightness: clip.brightness, contrast: clip.contrast, saturation: clip.saturation)).toList();
+                      _changeProject(_project.copyWith(clips: updated));
+                      updateSheet(() {});
+                    },
+                    icon: const Icon(Icons.layers_rounded, size: 17),
+                    label: const Text('Apply look to all clips'),
+                  ),
+                  TextButton.icon(
+                    onPressed: _exporting ? null : () {
+                      _updateSelectedClip(clip.copyWith(brightness: 0, contrast: 0, saturation: 0));
+                      updateSheet(() {});
+                    },
+                    icon: const Icon(Icons.restart_alt_rounded, size: 17),
+                    label: const Text('Reset picture'),
+                  ),
+                ]),
                 const Text('Looks are baked into the exported video. The current preview does not apply these color effects live.', style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4)),
               ]);
               break;
@@ -983,6 +995,13 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                   const SizedBox(width: 8),
                   const Expanded(child: Text('TIMELINE', style: TextStyle(fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w900))),
                   Text('${_project.clips.length} clips · ${_time(_project.durationMs)}', style: const TextStyle(fontSize: 10, color: Colors.white54)),
+                  const SizedBox(width: 5),
+                  const Icon(Icons.zoom_out_rounded, size: 15, color: Colors.white54),
+                  SizedBox(width: 74, child: Slider(
+                    min: .6, max: 2, divisions: 7, value: _timelineZoom,
+                    onChanged: (value) => setState(() => _timelineZoom = value),
+                  )),
+                  const Icon(Icons.zoom_in_rounded, size: 15, color: Colors.white54),
                   IconButton(tooltip: 'Add clips', onPressed: _exporting ? null : () => _openEditorTool('Media'), icon: Icon(Icons.add_circle_outline_rounded, color: accent)),
                 ],
               ),
@@ -1003,7 +1022,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                     key: ValueKey(item.id),
                     padding: const EdgeInsets.only(right: 8),
                     child: SizedBox(
-                      width: (item.lengthMs / 1000 * 17).clamp(104, 176).toDouble(),
+                      width: (item.lengthMs / 1000 * 17 * _timelineZoom).clamp(90, 300).toDouble(),
                       child: Material(
                         color: selected ? accent.withValues(alpha: .13) : const Color(0xFF15191E),
                         borderRadius: BorderRadius.circular(12),
