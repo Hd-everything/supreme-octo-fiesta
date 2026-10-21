@@ -398,6 +398,180 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
     );
   }
 
+  Future<void> _openEditorTool(String tool) async {
+    final accent = Theme.of(context).colorScheme.primary;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF15191E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, updateSheet) {
+          final clip = _selectedClip;
+          Widget action({required IconData icon, required String label, required VoidCallback? onPressed, bool destructive = false}) => OutlinedButton.icon(
+            onPressed: onPressed,
+            icon: Icon(icon, size: 18),
+            label: Text(label),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: destructive ? const Color(0xFFFF817B) : Colors.white,
+              side: BorderSide(color: destructive ? const Color(0x66FF817B) : const Color(0xFF343B43)),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
+            ),
+          );
+          Widget heading(String title, String subtitle) => Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w900, letterSpacing: -.4)),
+              const SizedBox(height: 5),
+              Text(subtitle, style: const TextStyle(color: Colors.white60, fontSize: 12)),
+            ]),
+          );
+          Widget ratioPicker() => Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final ratio in const ['Original', '9:16', '16:9', '1:1', '4:5'])
+                ChoiceChip(
+                  label: Text(ratio),
+                  selected: _project.aspectRatio == ratio,
+                  onSelected: (_) {
+                    _changeProject(_project.copyWith(aspectRatio: ratio));
+                    updateSheet(() {});
+                  },
+                ),
+            ],
+          );
+          Widget panel;
+          switch (tool) {
+            case 'Clip':
+              panel = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                heading('Clip tools', 'Edit the selected clip without changing the source file.'),
+                Row(children: [
+                  Expanded(child: action(icon: Icons.content_cut_rounded, label: 'Split', onPressed: _exporting ? null : () { Navigator.pop(sheetContext); unawaited(_splitAtPlayhead()); })),
+                  const SizedBox(width: 8),
+                  Expanded(child: action(icon: Icons.control_point_duplicate_rounded, label: 'Duplicate', onPressed: _exporting ? null : () { _duplicateSelected(); updateSheet(() {}); })),
+                ]),
+                const SizedBox(height: 8),
+                Row(children: [
+                  Expanded(child: action(icon: Icons.rotate_90_degrees_cw_rounded, label: 'Rotate 90°', onPressed: _exporting ? null : () { _updateSelectedClip(clip.copyWith(rotation: (clip.rotation + 90) % 360)); updateSheet(() {}); })),
+                  const SizedBox(width: 8),
+                  Expanded(child: action(icon: Icons.delete_outline_rounded, label: 'Delete clip', destructive: true, onPressed: _exporting || _project.clips.length == 1 ? null : () { _removeSelected(); Navigator.pop(sheetContext); })),
+                ]),
+                const SizedBox(height: 20),
+                const Text('TRIM RANGE', style: TextStyle(fontSize: 11, letterSpacing: 1.2, fontWeight: FontWeight.w800, color: Colors.white70)),
+                const SizedBox(height: 4),
+                RangeSlider(
+                  min: 0,
+                  max: (clip.durationMs / 1000).clamp(.5, double.infinity).toDouble(),
+                  divisions: (clip.durationMs ~/ 250).clamp(1, 500).toInt(),
+                  values: RangeValues((clip.startMs / 1000).clamp(0, clip.durationMs / 1000).toDouble(), (clip.endMs / 1000).clamp(0, clip.durationMs / 1000).toDouble()),
+                  onChangeStart: _exporting ? null : (_) => _beginTrim(),
+                  onChanged: _exporting ? null : (range) { _applyRange(range.start, range.end); updateSheet(() {}); },
+                  labels: RangeLabels(_time(clip.startMs), _time(clip.endMs)),
+                ),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Text('In  ${_time(clip.startMs)}', style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                  Text('Out  ${_time(clip.endMs)}', style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                ]),
+              ]);
+              break;
+            case 'Crop':
+              panel = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                heading('Crop & canvas', 'Choose the frame your final video is composed for.'),
+                ratioPicker(),
+                const SizedBox(height: 18),
+                action(icon: Icons.rotate_90_degrees_cw_rounded, label: 'Rotate selected clip · ${clip.rotation}°', onPressed: _exporting ? null : () { _updateSelectedClip(clip.copyWith(rotation: (clip.rotation + 90) % 360)); updateSheet(() {}); }),
+                const SizedBox(height: 10),
+                const Text('The selected frame ratio is applied during export. Use preview framing to check the composition before rendering.', style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.45)),
+              ]);
+              break;
+            case 'Text':
+              panel = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                heading('Text & titles', 'Place timed text over your video.'),
+                action(icon: Icons.add_rounded, label: 'Add text overlay', onPressed: _exporting ? null : () async { Navigator.pop(sheetContext); await _addTextOverlay(); }),
+                const SizedBox(height: 12),
+                if (_project.overlays.isEmpty) const Text('No text layers yet.', style: TextStyle(color: Colors.white54))
+                else for (final overlay in _project.overlays)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.title_rounded),
+                    title: Text(overlay.text, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text('${_time(overlay.startMs)} – ${_time(overlay.endMs)}'),
+                    trailing: IconButton(tooltip: 'Remove text layer', onPressed: () { _changeProject(_project.copyWith(overlays: _project.overlays.where((item) => item.id != overlay.id).toList())); updateSheet(() {}); }, icon: const Icon(Icons.close_rounded)),
+                  ),
+              ]);
+              break;
+            case 'Audio':
+              panel = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                heading('Audio mixing', 'Balance original clip sound and your soundtrack.'),
+                action(icon: Icons.library_music_outlined, label: _project.musicName == null ? 'Add soundtrack' : 'Change soundtrack', onPressed: _exporting ? null : () async { Navigator.pop(sheetContext); await _addMusic(); }),
+                if (_project.musicPath != null) ...[
+                  const SizedBox(height: 14),
+                  Row(children: [Expanded(child: Text(_project.musicName ?? 'Soundtrack', style: const TextStyle(fontWeight: FontWeight.w700))), IconButton(onPressed: () => _changeProject(_project.copyWith(removeMusic: true)), icon: const Icon(Icons.delete_outline_rounded), tooltip: 'Remove soundtrack')]),
+                  Row(children: [const SizedBox(width: 70, child: Text('Music', style: TextStyle(color: Colors.white70, fontSize: 12))), Expanded(child: Slider(value: _project.musicVolume.clamp(0, 1), onChangeStart: (_) { _undo.add(_project); _redo.clear(); }, onChanged: (value) { _changeProject(_project.copyWith(musicVolume: value), recordUndo: false); updateSheet(() {}); })), Text('${(_project.musicVolume * 100).round()}%', style: const TextStyle(fontSize: 11))]),
+                  Row(children: [const SizedBox(width: 70, child: Text('Start', style: TextStyle(color: Colors.white70, fontSize: 12))), Expanded(child: Slider(value: _project.musicOffsetMs.clamp(0, _project.durationMs).toDouble(), max: _project.durationMs.clamp(1, 86400000).toDouble(), onChangeStart: (_) { _undo.add(_project); _redo.clear(); }, onChanged: (value) { _changeProject(_project.copyWith(musicOffsetMs: value.round()), recordUndo: false); updateSheet(() {}); })), Text(_time(_project.musicOffsetMs), style: const TextStyle(fontSize: 11))]),
+                ],
+                const SizedBox(height: 10),
+                Row(children: [const SizedBox(width: 70, child: Text('Clip audio', style: TextStyle(color: Colors.white70, fontSize: 12))), Expanded(child: Slider(value: clip.volume.clamp(0, 1), onChangeStart: (_) => _beginTrim(), onChanged: (value) { _updateSelectedClip(clip.copyWith(volume: value), recordUndo: false); updateSheet(() {}); })), Text('${(clip.volume * 100).round()}%', style: const TextStyle(fontSize: 11))]),
+              ]);
+              break;
+            case 'Adjust':
+              panel = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                heading('Picture adjustments', 'Fine-tune the selected clip. Changes are included in project export.'),
+                _adjustmentSlider('Brightness', clip.brightness, -.25, .25, (value) { _updateSelectedClip(clip.copyWith(brightness: value), recordUndo: false); updateSheet(() {}); }),
+                _adjustmentSlider('Contrast', clip.contrast, -.3, .3, (value) { _updateSelectedClip(clip.copyWith(contrast: value), recordUndo: false); updateSheet(() {}); }),
+                _adjustmentSlider('Saturation', clip.saturation, -20, 30, (value) { _updateSelectedClip(clip.copyWith(saturation: value), recordUndo: false); updateSheet(() {}); }),
+                const SizedBox(height: 8),
+                const Text('Adjustments are applied during export; preview rendering may not reflect every adjustment live.', style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4)),
+              ]);
+              break;
+            case 'Layers':
+              panel = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                heading('Overlay layers', 'Add and manage graphics above your footage.'),
+                action(icon: Icons.add_photo_alternate_outlined, label: 'Add image overlay', onPressed: _exporting ? null : () async { Navigator.pop(sheetContext); await _addImageOverlay(); }),
+                const SizedBox(height: 10),
+                if (_project.imageOverlays.isEmpty) const Text('No image layers yet.', style: TextStyle(color: Colors.white54))
+                else for (final overlay in _project.imageOverlays)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.image_outlined),
+                    title: Text(overlay.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text('Tap to position · ${_time(overlay.startMs)}–${_time(overlay.endMs)}'),
+                    onTap: () async { Navigator.pop(sheetContext); await _editImageOverlay(overlay); },
+                    trailing: IconButton(tooltip: 'Remove image layer', onPressed: () { _changeProject(_project.copyWith(imageOverlays: _project.imageOverlays.where((item) => item.id != overlay.id).toList())); updateSheet(() {}); }, icon: const Icon(Icons.close_rounded)),
+                  ),
+              ]);
+              break;
+            default:
+              panel = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                heading('Add media', 'Bring more footage into this project.'),
+                action(icon: Icons.video_library_outlined, label: 'Add video clips', onPressed: _exporting ? null : () async { Navigator.pop(sheetContext); await _addClips(); }),
+              ]);
+          }
+          return SafeArea(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(20, 12, 20, 20 + MediaQuery.viewInsetsOf(context).bottom),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(child: Container(width: 38, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(4)))),
+                    const SizedBox(height: 20),
+                    panel,
+                    const SizedBox(height: 12),
+                    TextButton(onPressed: () => Navigator.pop(sheetContext), child: const Text('Done')),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.primary;
@@ -409,107 +583,281 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
       '16:9' => 16 / 9,
       '1:1' => 1.0,
       '4:5' => 4 / 5,
-      _ => playerReady ? (_selectedClip.rotation % 180 == 0 ? player!.value.aspectRatio : 1 / player!.value.aspectRatio) : 16 / 9,
+      _ => playerReady ? (_previewingExport || _selectedClip.rotation % 180 == 0 ? player!.value.aspectRatio : 1 / player!.value.aspectRatio) : 16 / 9,
     };
     final selectedGlobalStart = _project.clips.take(_selectedIndex).fold<int>(0, (sum, item) => sum + item.lengthMs);
     final clipPosition = playerReady && !_previewingExport ? (player!.value.position.inMilliseconds - clip.startMs).clamp(0, clip.lengthMs) : 0;
     final projectPosition = selectedGlobalStart + clipPosition;
     final visibleText = _previewingExport ? const <EditTextOverlay>[] : _project.overlays.where((overlay) => overlay.startMs <= projectPosition && overlay.endMs > projectPosition).toList();
     return Scaffold(
+      backgroundColor: const Color(0xFF080A0D),
       appBar: AppBar(
-        title: GestureDetector(onTap: _renameProject, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(_project.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)), const Text('VYNTRA · VIDEO EDITOR', style: TextStyle(fontSize: 9, letterSpacing: 1.3, color: Colors.white54))])),
+        toolbarHeight: 58,
+        leading: IconButton(tooltip: 'Back to projects', onPressed: () => Navigator.maybePop(context), icon: const Icon(Icons.arrow_back_rounded)),
+        titleSpacing: 0,
+        title: GestureDetector(
+          onTap: _renameProject,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(_project.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+              const Text('VYNTRA STUDIO', style: TextStyle(fontSize: 9, letterSpacing: 1.6, color: Colors.white45)),
+            ],
+          ),
+        ),
         actions: [
-          IconButton(tooltip: 'Undo', onPressed: _undo.isEmpty || _exporting ? null : _undoEdit, icon: const Icon(Icons.undo_rounded)),
-          IconButton(tooltip: 'Redo', onPressed: _redo.isEmpty || _exporting ? null : _redoEdit, icon: const Icon(Icons.redo_rounded)),
-          TextButton.icon(onPressed: _exporting ? null : _export, icon: const Icon(Icons.file_upload_outlined), label: const Text('Export')),
+          IconButton(tooltip: 'Undo', onPressed: _undo.isEmpty || _exporting ? null : _undoEdit, icon: const Icon(Icons.undo_rounded, size: 21)),
+          IconButton(tooltip: 'Redo', onPressed: _redo.isEmpty || _exporting ? null : _redoEdit, icon: const Icon(Icons.redo_rounded, size: 21)),
+          Padding(
+            padding: const EdgeInsets.only(right: 10, left: 2),
+            child: FilledButton(
+              onPressed: _exporting ? null : _export,
+              style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 13), minimumSize: const Size(0, 38), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+              child: const Text('Export', style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ),
         ],
       ),
-      body: SafeArea(child: Column(children: [
-        Expanded(child: ListView(padding: const EdgeInsets.fromLTRB(14, 4, 14, 18), children: [
-          AspectRatio(aspectRatio: previewAspect, child: ClipRRect(borderRadius: BorderRadius.circular(16), child: ColoredBox(color: Colors.black, child: playerReady ? LayoutBuilder(builder: (context, bounds) => Stack(fit: StackFit.expand, children: [
-            Center(child: RotatedBox(quarterTurns: _previewingExport ? 0 : _selectedClip.rotation ~/ 90, child: VideoPlayer(player!))),
-            for (final overlay in visibleText) Align(alignment: Alignment(overlay.x, overlay.y * 2 - 1), child: Padding(padding: const EdgeInsets.all(18), child: Text(overlay.text, textAlign: TextAlign.center, style: TextStyle(color: Color(overlay.color), fontWeight: FontWeight.w900, fontSize: overlay.fontSize, shadows: const [Shadow(color: Colors.black87, blurRadius: 8, offset: Offset(1, 2))])))),
-            if (!_previewingExport) for (final overlay in _project.imageOverlays.where((overlay) => overlay.startMs <= projectPosition && overlay.endMs > projectPosition)) Positioned(left: (bounds.maxWidth * overlay.x).clamp(0, bounds.maxWidth - 32).toDouble(), top: (bounds.maxHeight * overlay.y).clamp(0, bounds.maxHeight - 32).toDouble(), width: (bounds.maxWidth * overlay.scale).clamp(32, bounds.maxWidth).toDouble(), height: (bounds.maxWidth * overlay.scale).clamp(32, bounds.maxWidth).toDouble(), child: Image.file(File(overlay.path), fit: BoxFit.contain, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined, color: Colors.white70))),
-          ])) : const Center(child: CircularProgressIndicator())))),
-          const SizedBox(height: 9),
-          Row(children: [
-            IconButton.filledTonal(onPressed: !playerReady ? null : () { if (player!.value.isPlaying) { player.pause(); } else { player.play(); } }, icon: Icon(playerReady && player!.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded)),
-            const SizedBox(width: 8),
-            if (playerReady) Expanded(child: ValueListenableBuilder<VideoPlayerValue>(valueListenable: player!, builder: (_, value, __) => Slider(
-              min: 0,
-          max: (value.duration.inMilliseconds / 1000).clamp(.1, double.infinity).toDouble(),
-          value: (value.position.inMilliseconds / 1000).clamp(0, value.duration.inMilliseconds / 1000).toDouble(),
-              onChanged: (seconds) => player!.seekTo(Duration(milliseconds: (seconds * 1000).round())),
-            ))) else const Spacer(),
-            Text(playerReady ? _time(player!.value.position.inMilliseconds) : '0:00', style: const TextStyle(fontSize: 11, color: Colors.white60)),
-          ]),
-          if (_previewingExport) ...[
-            OutlinedButton.icon(onPressed: () => setState(() => _previewingExport = false), icon: const Icon(Icons.edit_rounded), label: const Text('Back to project timeline')),
-            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _saveExport, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save'))), const SizedBox(width: 10), Expanded(child: FilledButton.icon(onPressed: _shareExport, icon: const Icon(Icons.share_rounded), label: const Text('Share')))]),
-          ] else ...[
-            Row(children: [const Icon(Icons.movie_filter_outlined, size: 17), const SizedBox(width: 7), Text('PROJECT TIMELINE · ${_project.clips.length} CLIPS · ${_time(_project.durationMs)}', style: const TextStyle(fontSize: 10, letterSpacing: .6, fontWeight: FontWeight.w800)), const Spacer(), IconButton(onPressed: _addClips, tooltip: 'Add video clips', icon: Icon(Icons.add_to_photos_outlined, color: accent))]),
-            SizedBox(height: 126, child: ReorderableListView.builder(
-              scrollDirection: Axis.horizontal,
-              buildDefaultDragHandles: false,
-              padding: const EdgeInsets.only(bottom: 5),
-              itemCount: _project.clips.length,
-              onReorderItem: _reorder,
-              itemBuilder: (context, index) => Padding(key: ValueKey(_project.clips[index].id), padding: const EdgeInsets.only(right: 8), child: _timelineCard(_project.clips[index], index, accent)),
-            )),
-            const SizedBox(height: 5),
-            Row(children: [Text('TRIM SELECTED CLIP', style: TextStyle(fontSize: 10, letterSpacing: 1.3, fontWeight: FontWeight.w800, color: accent)), const Spacer(), IconButton(onPressed: _removeSelected, tooltip: 'Remove selected clip', icon: const Icon(Icons.delete_outline_rounded))]),
-            RangeSlider(
-              min: 0,
-              max: (clip.durationMs / 1000).clamp(.5, double.infinity).toDouble(),
-              divisions: (clip.durationMs ~/ 250).clamp(1, 500).toInt(),
-              values: RangeValues((clip.startMs / 1000).clamp(0, clip.durationMs / 1000).toDouble(), (clip.endMs / 1000).clamp(0, clip.durationMs / 1000).toDouble()),
-              onChangeStart: _exporting ? null : (_) => _beginTrim(),
-              onChanged: _exporting ? null : (range) => _applyRange(range.start, range.end),
-              labels: RangeLabels(_time(clip.startMs), _time(clip.endMs)),
+      body: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            Expanded(
+              flex: 5,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
+                child: LayoutBuilder(
+                  builder: (context, bounds) {
+                    final maxWidth = bounds.maxWidth;
+                    final maxHeight = bounds.maxHeight;
+                    final safeAspect = previewAspect.clamp(.45, 2.2).toDouble();
+                    final width = (maxHeight * safeAspect).clamp(1, maxWidth).toDouble();
+                    return Center(
+                      child: SizedBox(
+                        width: width,
+                        height: width / safeAspect,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(16),
+                          child: ColoredBox(
+                            color: const Color(0xFF000000),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                if (playerReady)
+                                  Center(child: RotatedBox(quarterTurns: _previewingExport ? 0 : clip.rotation ~/ 90, child: VideoPlayer(player!)))
+                                else
+                                  Center(child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.movie_outlined, size: 38, color: accent.withValues(alpha: .7)),
+                                      const SizedBox(height: 10),
+                                      const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+                                      const SizedBox(height: 10),
+                                      const Text('Preparing preview', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                                    ],
+                                  )),
+                                for (final overlay in visibleText)
+                                  Align(
+                                    alignment: Alignment(overlay.x, overlay.y * 2 - 1),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Text(overlay.text, textAlign: TextAlign.center, style: TextStyle(color: Color(overlay.color), fontWeight: FontWeight.w900, fontSize: overlay.fontSize.clamp(16, 42), shadows: const [Shadow(color: Colors.black87, blurRadius: 8, offset: Offset(1, 2))])),
+                                    ),
+                                  ),
+                                if (!_previewingExport)
+                                  for (final overlay in _project.imageOverlays.where((item) => item.startMs <= projectPosition && item.endMs > projectPosition))
+                                    Positioned(
+                                      left: (bounds.maxWidth * overlay.x).clamp(0, bounds.maxWidth - 32).toDouble(),
+                                      top: (bounds.maxHeight * overlay.y).clamp(0, bounds.maxHeight - 32).toDouble(),
+                                      width: (bounds.maxWidth * overlay.scale).clamp(32, bounds.maxWidth).toDouble(),
+                                      height: (bounds.maxWidth * overlay.scale).clamp(32, bounds.maxWidth).toDouble(),
+                                      child: Image.file(File(overlay.path), fit: BoxFit.contain, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined, color: Colors.white70)),
+                                    ),
+                                if (_previewingExport)
+                                  Positioned(left: 10, top: 10, child: DecoratedBox(decoration: BoxDecoration(color: accent, borderRadius: BorderRadius.circular(7)), child: const Padding(padding: EdgeInsets.symmetric(horizontal: 8, vertical: 5), child: Text('EXPORT PREVIEW', style: TextStyle(color: Color(0xFF05251D), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: .8))))),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ),
-            const SizedBox(height: 6),
-            Text('CANVAS', style: TextStyle(fontSize: 10, letterSpacing: 1.3, fontWeight: FontWeight.w800, color: accent)),
-            const SizedBox(height: 7),
-            Wrap(spacing: 7, runSpacing: 5, children: [for (final ratio in const ['Original', '9:16', '16:9', '1:1', '4:5']) ChoiceChip(label: Text(ratio), selected: _project.aspectRatio == ratio, onSelected: (_) => _changeProject(_project.copyWith(aspectRatio: ratio)))]),
-            const SizedBox(height: 7),
-            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _exporting ? null : () => _updateSelectedClip(clip.copyWith(rotation: (clip.rotation + 90) % 360)), icon: const Icon(Icons.rotate_90_degrees_cw_rounded), label: Text('Rotate ${clip.rotation}°'))), const SizedBox(width: 8), Expanded(child: OutlinedButton.icon(onPressed: _exporting ? null : _addTextOverlay, icon: const Icon(Icons.title_rounded), label: const Text('Add text')))]),
-            const SizedBox(height: 7),
-            OutlinedButton.icon(onPressed: _exporting ? null : _addImageOverlay, icon: const Icon(Icons.add_photo_alternate_outlined), label: const Text('Add image overlay')),
-            const SizedBox(height: 7),
-            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _exporting ? null : _addMusic, icon: const Icon(Icons.music_note_rounded), label: Text(_project.musicName == null ? 'Add music' : 'Change music'))), if (_project.musicPath != null) IconButton(onPressed: () => _changeProject(_project.copyWith(removeMusic: true)), tooltip: 'Remove music track', icon: const Icon(Icons.delete_outline_rounded))]),
-            if (_project.musicPath != null) ...[
-              Text('MUSIC · ${_project.musicName ?? 'Audio track'}', style: const TextStyle(fontSize: 10, color: Colors.white60)),
-              Row(children: [const Text('Volume', style: TextStyle(fontSize: 10)), Expanded(child: Slider(value: _project.musicVolume, onChangeStart: (_) { _undo.add(_project); _redo.clear(); }, onChanged: (value) => _changeProject(_project.copyWith(musicVolume: value), recordUndo: false))), Text('${(_project.musicVolume * 100).round()}%', style: const TextStyle(fontSize: 10))]),
-              Row(children: [const Text('Start', style: TextStyle(fontSize: 10)), Expanded(child: Slider(value: _project.musicOffsetMs.clamp(0, _project.durationMs).toDouble(), max: _project.durationMs.clamp(1, 86400000).toDouble(), onChangeStart: (_) { _undo.add(_project); _redo.clear(); }, onChanged: (value) => _changeProject(_project.copyWith(musicOffsetMs: value.round()), recordUndo: false))), Text(_time(_project.musicOffsetMs), style: const TextStyle(fontSize: 10))]),
-            ],
-            if (_project.overlays.isNotEmpty) ...[
-              const SizedBox(height: 7),
-              for (final overlay in _project.overlays) Card(child: ListTile(dense: true, leading: Icon(Icons.title_rounded, color: Color(overlay.color)), title: Text(overlay.text, maxLines: 1, overflow: TextOverflow.ellipsis), subtitle: Text('${_time(overlay.startMs)} – ${_time(overlay.endMs)}'), trailing: IconButton(tooltip: 'Remove text overlay', onPressed: () => _changeProject(_project.copyWith(overlays: _project.overlays.where((item) => item.id != overlay.id).toList())), icon: const Icon(Icons.close_rounded))))
-            ],
-            if (_project.imageOverlays.isNotEmpty) ...[
-              const SizedBox(height: 5),
-              for (final overlay in _project.imageOverlays) Card(child: ListTile(dense: true, onTap: () => _editImageOverlay(overlay), leading: const Icon(Icons.image_outlined), title: Text(overlay.name, maxLines: 1, overflow: TextOverflow.ellipsis), subtitle: Text('Tap to position · ${_time(overlay.startMs)} – ${_time(overlay.endMs)}'), trailing: IconButton(tooltip: 'Remove image overlay', onPressed: () => _changeProject(_project.copyWith(imageOverlays: _project.imageOverlays.where((item) => item.id != overlay.id).toList())), icon: const Icon(Icons.close_rounded))))
-            ],
-            ExpansionTile(title: const Text('Clip sound & picture adjustments', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)), tilePadding: EdgeInsets.zero, children: [
-              _adjustmentSlider('Original audio', clip.volume, 0, 1, (value) => _updateSelectedClip(clip.copyWith(volume: value), recordUndo: false), labelText: '${(clip.volume * 100).round()}%'),
-              _adjustmentSlider('Brightness', clip.brightness, -.25, .25, (value) => _updateSelectedClip(clip.copyWith(brightness: value), recordUndo: false)),
-              _adjustmentSlider('Contrast', clip.contrast, -.3, .3, (value) => _updateSelectedClip(clip.copyWith(contrast: value), recordUndo: false)),
-              _adjustmentSlider('Saturation', clip.saturation, -20, 30, (value) => _updateSelectedClip(clip.copyWith(saturation: value), recordUndo: false)),
-            ]),
-            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _splitAtPlayhead, icon: const Icon(Icons.content_cut_rounded), label: const Text('Split at playhead'))), const SizedBox(width: 8), Expanded(child: OutlinedButton.icon(onPressed: _addClips, icon: const Icon(Icons.add_rounded), label: const Text('Add clips')))]),
-            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _duplicateSelected, icon: const Icon(Icons.control_point_duplicate_rounded), label: const Text('Duplicate clip'))), const SizedBox(width: 8), Expanded(child: OutlinedButton.icon(onPressed: _removeSelected, icon: const Icon(Icons.delete_outline_rounded), label: const Text('Remove clip')))]),
-            const SizedBox(height: 6),
-            const Text('Drag clips to reorder. Canvas framing, rotation, clip audio, picture adjustments, timed text, and optional music are applied during export.', style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.4)),
-            const SizedBox(height: 5),
-            const Text('One rewarded ad unlocks one watermark-free project export.', style: TextStyle(color: Colors.white38, fontSize: 10)),
-            if (_exportPath != null) ...[
-              const SizedBox(height: 10),
-              Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _saveExport, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save export'))), const SizedBox(width: 9), Expanded(child: FilledButton.icon(onPressed: _shareExport, icon: const Icon(Icons.share_rounded), label: const Text('Share export')))]),
-            ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 18, 4),
+              child: Row(
+                children: [
+                  IconButton.filledTonal(
+                    tooltip: playerReady && player!.value.isPlaying ? 'Pause' : 'Play',
+                    onPressed: !playerReady ? null : () { if (player!.value.isPlaying) { player.pause(); } else { player.play(); } setState(() {}); },
+                    icon: Icon(playerReady && player!.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: playerReady
+                      ? ValueListenableBuilder<VideoPlayerValue>(
+                          valueListenable: player!,
+                          builder: (_, value, __) => Column(
+                            children: [
+                              Slider(
+                                min: 0,
+                                max: (value.duration.inMilliseconds / 1000).clamp(.1, double.infinity).toDouble(),
+                                value: (value.position.inMilliseconds / 1000).clamp(0, value.duration.inMilliseconds / 1000).toDouble(),
+                                onChanged: (seconds) => player!.seekTo(Duration(milliseconds: (seconds * 1000).round())),
+                              ),
+                            ],
+                          ),
+                        )
+                      : const LinearProgressIndicator(minHeight: 2),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(playerReady ? _time(player!.value.position.inMilliseconds) : '0:00', style: const TextStyle(fontSize: 11, fontFeatures: [FontFeature.tabularFigures()], color: Colors.white70)),
+                  const Text(' / ', style: TextStyle(fontSize: 11, color: Colors.white30)),
+                  Text(_time(clip.lengthMs), style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                ],
+              ),
+            ),
+            if (_previewingExport && _exportPath != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(children: [
+                  Expanded(child: OutlinedButton.icon(onPressed: () => setState(() => _previewingExport = false), icon: const Icon(Icons.edit_rounded), label: const Text('Back to edit'))),
+                  const SizedBox(width: 8),
+                  Expanded(child: OutlinedButton.icon(onPressed: _saveExport, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save video'))),
+                  const SizedBox(width: 8),
+                  Expanded(child: FilledButton.icon(onPressed: _shareExport, icon: const Icon(Icons.share_rounded), label: const Text('Share'))),
+                ]),
+              ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 7),
+              decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFF252B31)))),
+              child: Row(
+                children: [
+                  const Icon(Icons.movie_filter_outlined, size: 17, color: Colors.white70),
+                  const SizedBox(width: 8),
+                  const Expanded(child: Text('TIMELINE', style: TextStyle(fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w900))),
+                  Text('${_project.clips.length} clips · ${_time(_project.durationMs)}', style: const TextStyle(fontSize: 10, color: Colors.white54)),
+                  IconButton(tooltip: 'Add clips', onPressed: _exporting ? null : () => _openEditorTool('Media'), icon: Icon(Icons.add_circle_outline_rounded, color: accent)),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 116,
+              child: ReorderableListView.builder(
+                scrollDirection: Axis.horizontal,
+                buildDefaultDragHandles: false,
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                itemCount: _project.clips.length,
+                onReorderItem: _reorder,
+                itemBuilder: (context, index) {
+                  final item = _project.clips[index];
+                  final selected = index == _selectedIndex;
+                  final thumbnail = _thumbnail(item);
+                  return Padding(
+                    key: ValueKey(item.id),
+                    padding: const EdgeInsets.only(right: 8),
+                    child: SizedBox(
+                      width: (item.lengthMs / 1000 * 17).clamp(104, 176).toDouble(),
+                      child: Material(
+                        color: selected ? accent.withValues(alpha: .13) : const Color(0xFF15191E),
+                        borderRadius: BorderRadius.circular(12),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: () => _loadClipPreview(index),
+                          child: Container(
+                            decoration: BoxDecoration(border: Border.all(color: selected ? accent : const Color(0xFF292F36), width: selected ? 1.5 : 1)),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Expanded(
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      FutureBuilder<Uint8List?>(
+                                        future: thumbnail,
+                                        builder: (context, snapshot) => snapshot.data == null
+                                          ? const ColoredBox(color: Color(0xFF222830), child: Center(child: Icon(Icons.movie_outlined, color: Colors.white54, size: 23)))
+                                          : Image.memory(snapshot.data!, fit: BoxFit.cover, gaplessPlayback: true),
+                                      ),
+                                      if (selected) Positioned(left: 0, right: 0, top: 0, child: Container(height: 3, color: accent)),
+                                      Positioned(right: 5, bottom: 5, child: DecoratedBox(decoration: BoxDecoration(color: Colors.black.withValues(alpha: .75), borderRadius: BorderRadius.circular(5)), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3), child: Text(_time(item.lengthMs), style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w800))))),
+                                    ],
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(7, 6, 4, 5),
+                                  child: Row(children: [
+                                    Expanded(child: Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 9, fontWeight: selected ? FontWeight.w900 : FontWeight.w600))),
+                                    ReorderableDragStartListener(index: index, child: const Icon(Icons.drag_indicator_rounded, size: 14, color: Colors.white54)),
+                                  ]),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            if (_exporting)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
+                child: Column(children: [
+                  LinearProgressIndicator(value: !_watchingRewardedAd && _progress > 0 ? _progress : null, minHeight: 3),
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    Expanded(child: Text(_watchingRewardedAd ? 'Unlocking export…' : _progress > 0 ? 'Rendering · ${(_progress * 100).round()}%' : 'Rendering project…', style: TextStyle(color: accent, fontSize: 11))),
+                    if (!_watchingRewardedAd) TextButton(onPressed: () => _processing.cancel(), child: const Text('Cancel')),
+                  ]),
+                ]),
+              ),
+            Container(
+              height: 82,
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 7),
+              decoration: const BoxDecoration(color: Color(0xFF101317), border: Border(top: BorderSide(color: Color(0xFF252B31)))),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _editorToolButton(Icons.tune_rounded, 'Clip', accent, () => _openEditorTool('Clip')),
+                    _editorToolButton(Icons.crop_rounded, 'Crop', accent, () => _openEditorTool('Crop')),
+                    _editorToolButton(Icons.title_rounded, 'Text', accent, () => _openEditorTool('Text')),
+                    _editorToolButton(Icons.graphic_eq_rounded, 'Audio', accent, () => _openEditorTool('Audio')),
+                    _editorToolButton(Icons.auto_fix_high_rounded, 'Adjust', accent, () => _openEditorTool('Adjust')),
+                    _editorToolButton(Icons.layers_outlined, 'Layers', accent, () => _openEditorTool('Layers')),
+                    _editorToolButton(Icons.video_library_outlined, 'Media', accent, () => _openEditorTool('Media')),
+                  ],
+                ),
+              ),
+            ),
           ],
-          if (_exporting) ...[const SizedBox(height: 14), LinearProgressIndicator(value: !_watchingRewardedAd && _progress > 0 ? _progress : null), const SizedBox(height: 7), Row(children: [Expanded(child: Text(_watchingRewardedAd ? 'Unlocking one video export…' : _progress > 0 ? 'Rendering project · ${(_progress * 100).round()}%' : 'Rendering project…', style: TextStyle(color: accent, fontSize: 12))), if (!_watchingRewardedAd) TextButton(onPressed: () => _processing.cancel(), child: const Text('Cancel'))])],
-        ])),
-      ])),
+        ),
+      ),
     );
   }
+
+  Widget _editorToolButton(IconData icon, String label, Color accent, VoidCallback onPressed) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 4),
+    child: SizedBox(
+      width: 65,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(13),
+        onTap: onPressed,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: accent, size: 22),
+            const SizedBox(height: 6),
+            Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white70)),
+          ],
+        ),
+      ),
+    ),
+  );
+}
 }
