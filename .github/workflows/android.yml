@@ -22,6 +22,10 @@ jobs:
         with:
           channel: stable
           cache: true
+      - name: Validate cloud renderer Python syntax
+        run: python3 -m py_compile cloud-renderer/worker.py
+      - name: Build cloud renderer container
+        run: docker build --tag vyntra-cloud-renderer cloud-renderer
       - name: Restore packages
         run: flutter pub get
       - name: Format check
