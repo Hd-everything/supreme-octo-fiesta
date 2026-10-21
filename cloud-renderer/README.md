@@ -6,11 +6,11 @@ This directory is a separate long-running FFmpeg worker; FFmpeg must not run ins
 
 - Multiple ordered video clips, trims, 90-degree rotations, per-clip volume and picture adjustments.
 - Aspect-ratio framing, 720p / 1080p / 1440p / 2160p output, H.264 and H.265 if `libx265` exists.
-- Optional soundtrack mixing and timed text overlays.
+- Optional soundtrack mixing, timed text overlays, and positioned timed image overlays.
 - ffprobe output metadata validation plus a full decode pass before completion.
 - Private storage object paths and service-role credentials kept on the server.
 
-Unsupported effects are rejected explicitly. Image overlays currently fail with `unsupported_effect:image_overlays`; transitions and speed changes also fail explicitly. 8K is disabled by default and must not be exposed to users unless a deployment has explicitly enabled it and passed an actual 7680x4320 decode test.
+Unsupported effects are rejected explicitly. Transitions and speed changes are not represented by the current editor model and fail if supplied. 8K is disabled by default, has a worker RAM/disk guard, and must not be exposed unless the deployment is explicitly enabled and passes an actual 7680x4320 decode test.
 
 ## Deploy
 
