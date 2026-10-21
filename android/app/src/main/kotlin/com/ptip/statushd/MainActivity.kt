@@ -9,6 +9,9 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.ChannelMixingAudioProcessor
+import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
 import androidx.media3.effect.Crop
@@ -20,9 +23,15 @@ import androidx.media3.effect.SeparableConvolution
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.TextOverlay
+import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.effect.StaticOverlaySettings
+import androidx.media3.effect.BitmapOverlay
+import androidx.media3.effect.TextureOverlay
+import android.text.style.AbsoluteSizeSpan
 import android.text.SpannableString
 import android.text.style.ForegroundColorSpan
 import android.graphics.Color
+import android.graphics.BitmapFactory
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Composition
@@ -276,20 +285,121 @@ class MainActivity : FlutterActivity() {
                     result.error("processing_busy", "Another video is already processing.", null)
                     return@setMethodCallHandler
                 }
+                val rawOverlays = call.argument<List<Map<String, Any>>>("overlays") ?: emptyList()
+                val rawImageOverlays = call.argument<List<Map<String, Any>>>("imageOverlays") ?: emptyList()
+                val outputRatio = call.argument<String>("aspectRatio") ?: "Original"
+                val musicPath = call.argument<String>("musicPath")
+                val musicVolume = (call.argument<Number>("musicVolume")?.toFloat() ?: 0.35f).coerceIn(0f, 1f)
+                val musicOffsetMs = (call.argument<Number>("musicOffsetMs")?.toLong() ?: 0L).coerceAtLeast(0L)
                 val editedItems = try {
-                    rawClips.map { clip ->
+                    val resultItems = mutableListOf<EditedMediaItem>()
+                    if (rawImageOverlays.size > 8) throw IllegalArgumentException("A project can contain up to eight image overlays.")
+                    val overlayBitmapCache = mutableMapOf<String, android.graphics.Bitmap>()
+                    var timelineStartMs = 0L
+                    rawClips.forEach { clip ->
                         val path = clip["path"]?.toString() ?: throw IllegalArgumentException("A project clip has no source path.")
                         if (!File(path).isFile) throw IllegalArgumentException("A project source file is no longer available: ${File(path).name}")
                         val startMs = (clip["startMs"] as? Number)?.toLong() ?: 0L
                         val endMs = (clip["endMs"] as? Number)?.toLong() ?: 0L
                         val durationMs = (inspectVideo(path)["durationMs"] as Number).toLong()
                         if (startMs < 0 || endMs <= startMs || endMs > durationMs) throw IllegalArgumentException("A project clip has an invalid trim range.")
-                        val mediaItem = MediaItem.Builder()
-                            .setUri(Uri.fromFile(File(path)))
-                            .setClippingConfiguration(MediaItem.ClippingConfiguration.Builder().setStartPositionMs(startMs).setEndPositionMs(endMs).build())
-                            .build()
-                        EditedMediaItem.Builder(mediaItem).build()
+                        val clipLengthMs = endMs - startMs
+                        val boundaries = mutableSetOf(0L, clipLengthMs)
+                        rawOverlays.forEach { overlay ->
+                            val overlayStart = (overlay["startMs"] as? Number)?.toLong() ?: 0L
+                            val overlayEnd = (overlay["endMs"] as? Number)?.toLong() ?: 0L
+                            listOf(overlayStart, overlayEnd).forEach { boundary ->
+                                val local = boundary - timelineStartMs
+                                if (local > 0L && local < clipLengthMs) boundaries.add(local)
+                            }
+                        }
+                        rawImageOverlays.forEach { overlay ->
+                            val overlayStart = (overlay["startMs"] as? Number)?.toLong() ?: 0L
+                            val overlayEnd = (overlay["endMs"] as? Number)?.toLong() ?: 0L
+                            listOf(overlayStart, overlayEnd).forEach { boundary ->
+                                val local = boundary - timelineStartMs
+                                if (local > 0L && local < clipLengthMs) boundaries.add(local)
+                            }
+                        }
+                        val orderedBoundaries = boundaries.sorted()
+                        val rotation = ((clip["rotation"] as? Number)?.toInt() ?: 0).let { ((it % 360) + 360) % 360 }
+                        val sourceVolume = (clip["volume"] as? Number)?.toFloat()?.coerceIn(0f, 1f) ?: 1f
+                        val brightness = (clip["brightness"] as? Number)?.toFloat()?.coerceIn(-0.25f, 0.25f) ?: 0f
+                        val contrast = (clip["contrast"] as? Number)?.toFloat()?.coerceIn(-0.3f, 0.3f) ?: 0f
+                        val saturation = (clip["saturation"] as? Number)?.toFloat()?.coerceIn(-20f, 30f) ?: 0f
+                        for (segmentIndex in 0 until orderedBoundaries.lastIndex) {
+                            val localStartMs = orderedBoundaries[segmentIndex]
+                            val localEndMs = orderedBoundaries[segmentIndex + 1]
+                            val globalStartMs = timelineStartMs + localStartMs
+                            val globalEndMs = timelineStartMs + localEndMs
+                            val effects = mutableListOf<androidx.media3.common.Effect>()
+                            if (rotation != 0) effects.add(ScaleAndRotateTransformation.Builder().setRotationDegrees(rotation.toFloat()).build())
+                            when (outputRatio) {
+                                "9:16" -> effects.add(Presentation.createForWidthAndHeight(1080, 1920, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+                                "16:9" -> effects.add(Presentation.createForWidthAndHeight(1920, 1080, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+                                "1:1" -> effects.add(Presentation.createForWidthAndHeight(1080, 1080, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+                                "4:5" -> effects.add(Presentation.createForWidthAndHeight(1080, 1350, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+                            }
+                            if (brightness != 0f) effects.add(Brightness(brightness))
+                            if (contrast != 0f) effects.add(Contrast(contrast))
+                            if (saturation != 0f) effects.add(HslAdjustment.Builder().adjustSaturation(saturation).build())
+                            val overlays = rawOverlays.filter { overlay ->
+                                val overlayStart = (overlay["startMs"] as? Number)?.toLong() ?: 0L
+                                val overlayEnd = (overlay["endMs"] as? Number)?.toLong() ?: 0L
+                                overlayStart < globalEndMs && overlayEnd > globalStartMs
+                            }.map { overlay ->
+                                val text = SpannableString(overlay["text"]?.toString().orEmpty())
+                                if (text.isNotEmpty()) {
+                                    text.setSpan(ForegroundColorSpan((overlay["color"] as? Number)?.toInt() ?: Color.WHITE), 0, text.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                                    text.setSpan(AbsoluteSizeSpan(((overlay["fontSize"] as? Number)?.toInt() ?: 34).coerceIn(16, 96)), 0, text.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                                }
+                                val x = (overlay["x"] as? Number)?.toFloat()?.coerceIn(-1f, 1f) ?: 0f
+                                val y = (overlay["y"] as? Number)?.toFloat()?.coerceIn(-1f, 1f) ?: 0.55f
+                                TextOverlay.createStaticTextOverlay(text, StaticOverlaySettings.Builder()
+                                    .setBackgroundFrameAnchor(x, 1f - y * 2f)
+                                    .setOverlayFrameAnchor(0f, 0f)
+                                    .build())
+                            }
+                            if (overlays.isNotEmpty()) effects.add(OverlayEffect(overlays))
+                            val activeImages = rawImageOverlays.filter { overlay ->
+                                val overlayStart = (overlay["startMs"] as? Number)?.toLong() ?: 0L
+                                val overlayEnd = (overlay["endMs"] as? Number)?.toLong() ?: 0L
+                                overlayStart < globalEndMs && overlayEnd > globalStartMs
+                            }.mapNotNull { overlay ->
+                                val imagePath = overlay["path"]?.toString() ?: return@mapNotNull null
+                                if (!File(imagePath).isFile) throw IllegalArgumentException("A project image overlay is no longer available.")
+                                val bitmap = overlayBitmapCache.getOrPut(imagePath) {
+                                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                    BitmapFactory.decodeFile(imagePath, options)
+                                    var sampleSize = 1
+                                    while (options.outWidth / sampleSize > 1280 || options.outHeight / sampleSize > 1280) sampleSize *= 2
+                                    BitmapFactory.decodeFile(imagePath, BitmapFactory.Options().apply { inSampleSize = sampleSize })
+                                        ?: throw IllegalArgumentException("Could not decode a project image overlay.")
+                                }
+                                val scale = ((overlay["scale"] as? Number)?.toFloat() ?: 0.28f).coerceIn(0.05f, 1f)
+                                val x = ((overlay["x"] as? Number)?.toFloat() ?: 0.65f).coerceIn(0f, 1f) * 2f - 1f
+                                val y = 1f - ((overlay["y"] as? Number)?.toFloat() ?: 0.55f).coerceIn(0f, 1f) * 2f
+                                BitmapOverlay.createStaticBitmapOverlay(bitmap, StaticOverlaySettings.Builder()
+                                    .setBackgroundFrameAnchor(x, y)
+                                    .setOverlayFrameAnchor(0f, 0f)
+                                    .setScale(scale, scale)
+                                    .build())
+                            }
+                            if (activeImages.isNotEmpty()) effects.add(OverlayEffect(activeImages))
+                            val mediaItem = MediaItem.Builder()
+                                .setUri(Uri.fromFile(File(path)))
+                                .setClippingConfiguration(MediaItem.ClippingConfiguration.Builder()
+                                    .setStartPositionMs(startMs + localStartMs)
+                                    .setEndPositionMs(startMs + localEndMs)
+                                    .build())
+                                .build()
+                            val processors = if (sourceVolume == 1f) emptyList() else channelGainProcessors(sourceVolume)
+                            resultItems.add(EditedMediaItem.Builder(mediaItem).setRemoveAudio(sourceVolume == 0f).setEffects(Effects(processors, effects)).build())
+                        }
+                        timelineStartMs += clipLengthMs
                     }
+                    if (musicPath != null && musicPath.isNotBlank() && !File(musicPath).isFile) throw IllegalArgumentException("The selected music file is no longer available.")
+                    resultItems
                 } catch (error: Exception) {
                     result.error("invalid_project_clip", error.message ?: "Could not read a project clip.", null)
                     return@setMethodCallHandler
@@ -297,7 +407,18 @@ class MainActivity : FlutterActivity() {
                 val outputFile = File(outputPath)
                 outputFile.parentFile?.mkdirs()
                 outputFile.delete()
-                val composition = Composition.Builder(EditedMediaItemSequence(editedItems)).build()
+                val videoSequence = EditedMediaItemSequence(editedItems)
+                val composition = if (musicPath.isNullOrBlank()) {
+                    Composition.Builder(videoSequence).build()
+                } else {
+                    val audioItem = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(File(musicPath))))
+                        .setEffects(Effects(channelGainProcessors(musicVolume), emptyList()))
+                        .build()
+                    val audioSequenceBuilder = EditedMediaItemSequence.Builder(emptyList<EditedMediaItem>())
+                    if (musicOffsetMs > 0L) audioSequenceBuilder.addGap(musicOffsetMs * 1000L)
+                    audioSequenceBuilder.addItem(audioItem).setIsLooping(true)
+                    Composition.Builder(videoSequence, audioSequenceBuilder.build()).build()
+                }
                 val progressHandler = Handler(Looper.getMainLooper())
                 val progressHolder = ProgressHolder()
                 lateinit var transformer: Transformer
@@ -448,6 +569,48 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread { result.success(uri.toString()) }
                     } catch (error: Exception) {
                         runOnUiThread { result.error("save_failed", error.message ?: "Could not save the video to Gallery.", null) }
+                    }
+                }.start()
+                return@setMethodCallHandler
+            }
+            if (call.method == "copyAudioToProject") {
+                val inputPath = call.argument<String>("inputPath")
+                val projectId = call.argument<String>("projectId")
+                if (inputPath.isNullOrBlank() || projectId.isNullOrBlank() || !projectId.matches(Regex("[A-Za-z0-9_-]{1,80}")) || !File(inputPath).isFile) {
+                    result.error("invalid_audio", "Choose a readable audio file for this project.", null)
+                    return@setMethodCallHandler
+                }
+                Thread {
+                    try {
+                        val source = File(inputPath)
+                        val safeName = source.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                        val directory = File(filesDir, "projects/$projectId/audio").apply { mkdirs() }
+                        val destination = File(directory, "${System.currentTimeMillis()}_$safeName")
+                        source.copyTo(destination, overwrite = true)
+                        runOnUiThread { result.success(destination.absolutePath) }
+                    } catch (error: Exception) {
+                        runOnUiThread { result.error("audio_copy_failed", error.message ?: "Could not store project audio.", null) }
+                    }
+                }.start()
+                return@setMethodCallHandler
+            }
+            if (call.method == "copyImageToProject") {
+                val inputPath = call.argument<String>("inputPath")
+                val projectId = call.argument<String>("projectId")
+                if (inputPath.isNullOrBlank() || projectId.isNullOrBlank() || !projectId.matches(Regex("[A-Za-z0-9_-]{1,80}")) || !File(inputPath).isFile || File(inputPath).length() > 25L * 1024 * 1024) {
+                    result.error("invalid_image", "Choose a readable image smaller than 25 MB.", null)
+                    return@setMethodCallHandler
+                }
+                Thread {
+                    try {
+                        val source = File(inputPath)
+                        val safeName = source.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                        val directory = File(filesDir, "projects/$projectId/images").apply { mkdirs() }
+                        val destination = File(directory, "${System.currentTimeMillis()}_$safeName")
+                        source.copyTo(destination, overwrite = true)
+                        runOnUiThread { result.success(destination.absolutePath) }
+                    } catch (error: Exception) {
+                        runOnUiThread { result.error("image_copy_failed", error.message ?: "Could not store project image.", null) }
                     }
                 }.start()
                 return@setMethodCallHandler
@@ -666,6 +829,15 @@ class MainActivity : FlutterActivity() {
         } finally {
             retriever.release()
         }
+    }
+
+    private fun channelGainProcessors(gain: Float): List<AudioProcessor> {
+        val processor = ChannelMixingAudioProcessor()
+        for (channelCount in 1..8) {
+            val matrix = ChannelMixingMatrix.createForConstantPower(channelCount, channelCount).scaleBy(gain.coerceIn(0f, 1f))
+            processor.putChannelMixingMatrix(matrix)
+        }
+        return listOf(processor)
     }
 
     private fun queryDeviceMedia(): List<Map<String, Any>> {

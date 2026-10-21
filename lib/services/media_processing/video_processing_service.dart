@@ -245,7 +245,16 @@ class VideoProcessingService {
     }
   }
 
-  Future<String> exportProject({required List<EditClip> clips, required String outputPath}) async {
+  Future<String> exportProject({
+    required List<EditClip> clips,
+    required String outputPath,
+    String aspectRatio = 'Original',
+    String? musicPath,
+    double musicVolume = .35,
+    int musicOffsetMs = 0,
+    List<EditTextOverlay> overlays = const [],
+    List<EditImageOverlay> imageOverlays = const [],
+  }) async {
     if (clips.isEmpty || clips.length > 24) throw const ProcessingValidationException('A project must contain between 1 and 24 video clips.');
     for (final clip in clips) {
       if (clip.path.isEmpty || !File(clip.path).existsSync() || clip.startMs < 0 || clip.endMs <= clip.startMs || clip.endMs > clip.durationMs) {
@@ -254,7 +263,39 @@ class VideoProcessingService {
     }
     _installProgressHandler();
     final output = await _channel.invokeMapMethod<String, dynamic>('exportProject', {
-      'clips': clips.map((clip) => {'path': clip.path, 'startMs': clip.startMs, 'endMs': clip.endMs}).toList(),
+      'clips': clips.map((clip) => {
+            'path': clip.path,
+            'startMs': clip.startMs,
+            'endMs': clip.endMs,
+            'rotation': clip.rotation,
+            'volume': clip.volume,
+            'brightness': clip.brightness,
+            'contrast': clip.contrast,
+            'saturation': clip.saturation,
+          }).toList(),
+      'aspectRatio': aspectRatio,
+      'musicPath': musicPath,
+      'musicVolume': musicVolume,
+      'musicOffsetMs': musicOffsetMs,
+      'overlays': overlays.map((overlay) => {
+            'id': overlay.id,
+            'text': overlay.text,
+            'startMs': overlay.startMs,
+            'endMs': overlay.endMs,
+            'color': overlay.color,
+            'fontSize': overlay.fontSize,
+            'x': overlay.x,
+            'y': overlay.y,
+          }).toList(),
+      'imageOverlays': imageOverlays.map((overlay) => {
+            'id': overlay.id,
+            'path': overlay.path,
+            'startMs': overlay.startMs,
+            'endMs': overlay.endMs,
+            'x': overlay.x,
+            'y': overlay.y,
+            'scale': overlay.scale,
+          }).toList(),
       'outputPath': outputPath,
       'reportProgress': true,
     });

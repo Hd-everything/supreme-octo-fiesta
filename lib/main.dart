@@ -751,9 +751,11 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       unawaited(_recordExports([XFile(processedPath, mimeType: 'video/mp4')], 'Enhanced video'));
     } catch (error) {
-      if (mounted) setState(() => _message = _cancelExportRequested
-          ? 'Export cancelled. The original video is unchanged.'
-          : _friendlyProcessingError(error, 'Video export failed. Try a smaller output size or a shorter clip.');
+      if (mounted) {
+        setState(() => _message = _cancelExportRequested
+            ? 'Export cancelled. The original video is unchanged.'
+            : _friendlyProcessingError(error, 'Video export failed. Try a smaller output size or a shorter clip.'));
+      }
     } finally {
       if (mounted) setState(() => _exporting = false);
       _cancelExportRequested = false;

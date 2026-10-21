@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
@@ -28,8 +29,8 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   late EditProject _project = widget.project;
   late final VideoProcessingService _processing = VideoProcessingService();
   final RewardedAdService _rewardedAds = RewardedAdService();
-  final List<List<EditClip>> _undo = [];
-  final List<List<EditClip>> _redo = [];
+  final List<EditProject> _undo = [];
+  final List<EditProject> _redo = [];
   final Map<String, Future<Uint8List?>> _thumbnails = {};
   VideoPlayerController? _controller;
   VideoPlayerController? _exportController;
@@ -102,7 +103,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   void _message(String text) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
   void _changeClips(List<EditClip> clips, {bool recordUndo = true}) {
-    if (recordUndo) { _undo.add(List<EditClip>.of(_project.clips)); _redo.clear(); }
+    if (recordUndo) { _undo.add(_project); _redo.clear(); }
     setState(() {
       _project = _project.copyWith(clips: clips);
       _exportPath = null;
@@ -111,6 +112,88 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
     });
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 350), () => widget.store.save(_project));
+  }
+
+  void _changeProject(EditProject project, {bool recordUndo = true}) {
+    if (project.toJson().toString() == _project.toJson().toString()) return;
+    if (recordUndo) { _undo.add(_project); _redo.clear(); }
+    setState(() { _project = project.copyWith(); _exportPath = null; _previewingExport = false; });
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 350), () => widget.store.save(_project));
+  }
+
+  void _updateSelectedClip(EditClip clip, {bool recordUndo = true}) {
+    final clips = List<EditClip>.of(_project.clips);
+    clips[_selectedIndex] = clip;
+    _changeClips(clips, recordUndo: recordUndo);
+  }
+
+  Future<void> _addTextOverlay() async {
+    final textController = TextEditingController();
+    final startController = TextEditingController(text: '0');
+    final endController = TextEditingController(text: (_project.durationMs / 1000).toStringAsFixed(1));
+    final result = await showDialog<EditTextOverlay>(context: context, builder: (context) => AlertDialog(
+      title: const Text('Add timed text'),
+      content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(controller: textController, autofocus: true, maxLength: 80, decoration: const InputDecoration(labelText: 'Text', hintText: 'Your title or caption')),
+        Row(children: [Expanded(child: TextField(controller: startController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Start (seconds)'))), const SizedBox(width: 12), Expanded(child: TextField(controller: endController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'End (seconds)')))]),
+      ])),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: () {
+        final text = textController.text.trim();
+        final start = (double.tryParse(startController.text) ?? 0).clamp(0, _project.durationMs / 1000);
+        final end = (double.tryParse(endController.text) ?? _project.durationMs / 1000).clamp(0, _project.durationMs / 1000);
+        if (text.isEmpty || end <= start) return;
+        Navigator.pop(context, EditTextOverlay(id: DateTime.now().microsecondsSinceEpoch.toString(), text: text, startMs: (start * 1000).round(), endMs: (end * 1000).round()));
+      }, child: const Text('Add text'))],
+    ));
+    textController.dispose();
+    startController.dispose();
+    endController.dispose();
+    if (result == null || !mounted) return;
+    _changeProject(_project.copyWith(overlays: [..._project.overlays, result]));
+  }
+
+  Future<void> _addMusic() async {
+    final selection = await FilePicker.platform.pickFiles(type: FileType.audio, allowMultiple: false, withData: false);
+    if (selection == null || selection.files.isEmpty || selection.files.single.path == null || !mounted) return;
+    try {
+      final destination = await _mediaChannel.invokeMethod<String>('copyAudioToProject', {'inputPath': selection.files.single.path, 'projectId': _project.id});
+      if (destination == null) throw StateError('Could not store the selected audio.');
+      _changeProject(_project.copyWith(musicPath: destination, musicName: selection.files.single.name));
+      _message('Added music. It will be mixed into the exported video.');
+    } on PlatformException catch (error) { _message(error.message ?? 'Could not add this audio file.'); }
+    catch (_) { _message('Could not add this audio file.'); }
+  }
+
+  Future<void> _addImageOverlay() async {
+    final selection = await FilePicker.platform.pickFiles(type: FileType.image, allowMultiple: false, withData: false);
+    if (selection == null || selection.files.isEmpty || selection.files.single.path == null || !mounted) return;
+    try {
+      final path = await _mediaChannel.invokeMethod<String>('copyImageToProject', {'inputPath': selection.files.single.path, 'projectId': _project.id});
+      if (path == null) throw StateError('Could not store the selected image.');
+      final overlay = EditImageOverlay(id: DateTime.now().microsecondsSinceEpoch.toString(), path: path, name: selection.files.single.name, startMs: 0, endMs: _project.durationMs);
+      _changeProject(_project.copyWith(imageOverlays: [..._project.imageOverlays, overlay]));
+      _message('Image overlay added. It will be included in the exported video.');
+    } on PlatformException catch (error) { _message(error.message ?? 'Could not add this image.'); }
+    catch (_) { _message('Could not add this image.'); }
+  }
+
+  Future<void> _editImageOverlay(EditImageOverlay overlay) async {
+    var x = overlay.x;
+    var y = overlay.y;
+    var scale = overlay.scale;
+    final save = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(builder: (context, updateDialog) => AlertDialog(
+      title: const Text('Position image overlay'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [const SizedBox(width: 42, child: Text('Left')), Expanded(child: Slider(value: x, onChanged: (value) => updateDialog(() => x = value)))]),
+        Row(children: [const SizedBox(width: 42, child: Text('Top')), Expanded(child: Slider(value: y, onChanged: (value) => updateDialog(() => y = value)))]),
+        Row(children: [const SizedBox(width: 42, child: Text('Size')), Expanded(child: Slider(min: .05, max: 1, value: scale, onChanged: (value) => updateDialog(() => scale = value)))]),
+      ]),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Apply'))],
+    )));
+    if (save != true || !mounted) return;
+    final updated = EditImageOverlay(id: overlay.id, path: overlay.path, name: overlay.name, startMs: overlay.startMs, endMs: overlay.endMs, x: x, y: y, scale: scale);
+    _changeProject(_project.copyWith(imageOverlays: _project.imageOverlays.map((item) => item.id == overlay.id ? updated : item).toList()));
   }
 
   Future<void> _addClips() async {
@@ -123,7 +206,6 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   }
 
   void _reorder(int oldIndex, int newIndex) {
-    if (newIndex > oldIndex) newIndex--;
     final clips = List<EditClip>.of(_project.clips);
     final clip = clips.removeAt(oldIndex);
     clips.insert(newIndex, clip);
@@ -143,7 +225,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   }
 
   void _beginTrim() {
-    _undo.add(List<EditClip>.of(_project.clips));
+    _undo.add(_project);
     _redo.clear();
   }
 
@@ -170,20 +252,33 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
     unawaited(_loadClipPreview(_selectedIndex.clamp(0, clips.length - 1).toInt()));
   }
 
+  void _duplicateSelected() {
+    if (_project.clips.length >= 24) { _message('Projects can contain up to 24 clips.'); return; }
+    final clip = _selectedClip;
+    final duplicate = clip.copyWith(id: '${DateTime.now().microsecondsSinceEpoch}_copy', name: '${clip.name} copy');
+    final clips = List<EditClip>.of(_project.clips)..insert(_selectedIndex + 1, duplicate);
+    _changeClips(clips);
+    unawaited(_loadClipPreview(_selectedIndex + 1));
+  }
+
   void _undoEdit() {
     if (_undo.isEmpty) return;
-    _redo.add(List<EditClip>.of(_project.clips));
-    final clips = _undo.removeLast();
-    _changeClips(clips, recordUndo: false);
-    unawaited(_loadClipPreview(_selectedIndex.clamp(0, clips.length - 1).toInt()));
+    _redo.add(_project);
+    final project = _undo.removeLast();
+    setState(() { _project = project; _exportPath = null; _previewingExport = false; _selectedIndex = _selectedIndex.clamp(0, project.clips.length - 1).toInt(); });
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 350), () => widget.store.save(_project));
+    unawaited(_loadClipPreview(_selectedIndex));
   }
 
   void _redoEdit() {
     if (_redo.isEmpty) return;
-    _undo.add(List<EditClip>.of(_project.clips));
-    final clips = _redo.removeLast();
-    _changeClips(clips, recordUndo: false);
-    unawaited(_loadClipPreview(_selectedIndex.clamp(0, clips.length - 1).toInt()));
+    _undo.add(_project);
+    final project = _redo.removeLast();
+    setState(() { _project = project; _exportPath = null; _previewingExport = false; _selectedIndex = _selectedIndex.clamp(0, project.clips.length - 1).toInt(); });
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 350), () => widget.store.save(_project));
+    unawaited(_loadClipPreview(_selectedIndex));
   }
 
   Future<void> _renameProject() async {
@@ -217,7 +312,16 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
       if (mounted) setState(() => _watchingRewardedAd = false);
       _message('Rendering project…');
       final path = '${Directory.systemTemp.path}/vyntra_${_project.id}_${DateTime.now().microsecondsSinceEpoch}.mp4';
-      final resultPath = await _processing.exportProject(clips: _project.clips, outputPath: path);
+      final resultPath = await _processing.exportProject(
+        clips: _project.clips,
+        outputPath: path,
+        aspectRatio: _project.aspectRatio,
+        musicPath: _project.musicPath,
+        musicVolume: _project.musicVolume,
+        musicOffsetMs: _project.musicOffsetMs,
+        overlays: _project.overlays,
+        imageOverlays: _project.imageOverlays,
+      );
       await widget.store.preferences.setInt(creditKey, credits - 1);
       try { await _recordExport(resultPath); } catch (_) {}
       final preview = VideoPlayerController.file(File(resultPath));
@@ -266,6 +370,12 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
 
   String _time(int milliseconds) => '${milliseconds ~/ 60000}:${((milliseconds ~/ 1000) % 60).toString().padLeft(2, '0')}';
 
+  Widget _adjustmentSlider(String label, double value, double min, double max, ValueChanged<double> onChanged, {String? labelText}) => Row(children: [
+        SizedBox(width: 92, child: Text(label, style: const TextStyle(fontSize: 10, color: Colors.white70))),
+        Expanded(child: Slider(min: min, max: max, value: value.clamp(min, max).toDouble(), onChangeStart: (_) => _beginTrim(), onChanged: onChanged)),
+        SizedBox(width: 38, child: Text(labelText ?? value.toStringAsFixed(2), textAlign: TextAlign.end, style: const TextStyle(fontSize: 9, color: Colors.white54))),
+      ]);
+
   Widget _timelineCard(EditClip clip, int index, Color accent) {
     final duration = clip.lengthMs;
     final image = _thumbnail(clip);
@@ -294,6 +404,17 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
     final clip = _selectedClip;
     final player = _previewingExport ? _exportController : _controller;
     final playerReady = player?.value.isInitialized == true;
+    final previewAspect = switch (_project.aspectRatio) {
+      '9:16' => 9 / 16,
+      '16:9' => 16 / 9,
+      '1:1' => 1.0,
+      '4:5' => 4 / 5,
+      _ => playerReady ? (_selectedClip.rotation % 180 == 0 ? player!.value.aspectRatio : 1 / player.value.aspectRatio) : 16 / 9,
+    };
+    final selectedGlobalStart = _project.clips.take(_selectedIndex).fold<int>(0, (sum, item) => sum + item.lengthMs);
+    final clipPosition = playerReady && !_previewingExport ? (player!.value.position.inMilliseconds - clip.startMs).clamp(0, clip.lengthMs) : 0;
+    final projectPosition = selectedGlobalStart + clipPosition;
+    final visibleText = _previewingExport ? const <EditTextOverlay>[] : _project.overlays.where((overlay) => overlay.startMs <= projectPosition && overlay.endMs > projectPosition).toList();
     return Scaffold(
       appBar: AppBar(
         title: GestureDetector(onTap: _renameProject, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(_project.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)), const Text('VYNTRA · VIDEO EDITOR', style: TextStyle(fontSize: 9, letterSpacing: 1.3, color: Colors.white54))])),
@@ -305,7 +426,11 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
       ),
       body: SafeArea(child: Column(children: [
         Expanded(child: ListView(padding: const EdgeInsets.fromLTRB(14, 4, 14, 18), children: [
-          AspectRatio(aspectRatio: 16 / 9, child: ClipRRect(borderRadius: BorderRadius.circular(16), child: ColoredBox(color: Colors.black, child: playerReady ? VideoPlayer(player!) : const Center(child: CircularProgressIndicator())))),
+          AspectRatio(aspectRatio: previewAspect, child: ClipRRect(borderRadius: BorderRadius.circular(16), child: ColoredBox(color: Colors.black, child: playerReady ? LayoutBuilder(builder: (context, bounds) => Stack(fit: StackFit.expand, children: [
+            Center(child: RotatedBox(quarterTurns: _previewingExport ? 0 : _selectedClip.rotation ~/ 90, child: VideoPlayer(player!))),
+            for (final overlay in visibleText) Align(alignment: Alignment(overlay.x, overlay.y * 2 - 1), child: Padding(padding: const EdgeInsets.all(18), child: Text(overlay.text, textAlign: TextAlign.center, style: TextStyle(color: Color(overlay.color), fontWeight: FontWeight.w900, fontSize: overlay.fontSize, shadows: const [Shadow(color: Colors.black87, blurRadius: 8, offset: Offset(1, 2))])))),
+            if (!_previewingExport) for (final overlay in _project.imageOverlays.where((overlay) => overlay.startMs <= projectPosition && overlay.endMs > projectPosition)) Positioned(left: (bounds.maxWidth * overlay.x).clamp(0, bounds.maxWidth - 32).toDouble(), top: (bounds.maxHeight * overlay.y).clamp(0, bounds.maxHeight - 32).toDouble(), width: (bounds.maxWidth * overlay.scale).clamp(32, bounds.maxWidth).toDouble(), height: (bounds.maxWidth * overlay.scale).clamp(32, bounds.maxWidth).toDouble(), child: Image.file(File(overlay.path), fit: BoxFit.contain, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined, color: Colors.white70))),
+          ])) : const Center(child: CircularProgressIndicator())))),
           const SizedBox(height: 9),
           Row(children: [
             IconButton.filledTonal(onPressed: !playerReady ? null : () { if (player!.value.isPlaying) { player.pause(); } else { player.play(); } }, icon: Icon(playerReady && player!.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded)),
@@ -328,7 +453,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
               buildDefaultDragHandles: false,
               padding: const EdgeInsets.only(bottom: 5),
               itemCount: _project.clips.length,
-              onReorder: _reorder,
+              onReorderItem: _reorder,
               itemBuilder: (context, index) => Padding(key: ValueKey(_project.clips[index].id), padding: const EdgeInsets.only(right: 8), child: _timelineCard(_project.clips[index], index, accent)),
             )),
             const SizedBox(height: 5),
@@ -342,9 +467,39 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
               onChanged: _exporting ? null : (range) => _applyRange(range.start, range.end),
               labels: RangeLabels(_time(clip.startMs), _time(clip.endMs)),
             ),
-            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _splitAtPlayhead, icon: const Icon(Icons.content_cut_rounded), label: const Text('Split at playhead'))), const SizedBox(width: 9), Expanded(child: OutlinedButton.icon(onPressed: _addClips, icon: const Icon(Icons.add_rounded), label: const Text('Add clips')))]),
             const SizedBox(height: 6),
-            const Text('Drag clips to reorder. Select a clip to preview and trim. Export joins the trimmed clips with their original audio.', style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.4)),
+            Text('CANVAS', style: TextStyle(fontSize: 10, letterSpacing: 1.3, fontWeight: FontWeight.w800, color: accent)),
+            const SizedBox(height: 7),
+            Wrap(spacing: 7, runSpacing: 5, children: [for (final ratio in const ['Original', '9:16', '16:9', '1:1', '4:5']) ChoiceChip(label: Text(ratio), selected: _project.aspectRatio == ratio, onSelected: (_) => _changeProject(_project.copyWith(aspectRatio: ratio)))]),
+            const SizedBox(height: 7),
+            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _exporting ? null : () => _updateSelectedClip(clip.copyWith(rotation: (clip.rotation + 90) % 360)), icon: const Icon(Icons.rotate_90_degrees_cw_rounded), label: Text('Rotate ${clip.rotation}°'))), const SizedBox(width: 8), Expanded(child: OutlinedButton.icon(onPressed: _exporting ? null : _addTextOverlay, icon: const Icon(Icons.title_rounded), label: const Text('Add text')))]),
+            const SizedBox(height: 7),
+            OutlinedButton.icon(onPressed: _exporting ? null : _addImageOverlay, icon: const Icon(Icons.add_photo_alternate_outlined), label: const Text('Add image overlay')),
+            const SizedBox(height: 7),
+            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _exporting ? null : _addMusic, icon: const Icon(Icons.music_note_rounded), label: Text(_project.musicName == null ? 'Add music' : 'Change music'))), if (_project.musicPath != null) IconButton(onPressed: () => _changeProject(_project.copyWith(removeMusic: true)), tooltip: 'Remove music track', icon: const Icon(Icons.delete_outline_rounded))]),
+            if (_project.musicPath != null) ...[
+              Text('MUSIC · ${_project.musicName ?? 'Audio track'}', style: const TextStyle(fontSize: 10, color: Colors.white60)),
+              Row(children: [const Text('Volume', style: TextStyle(fontSize: 10)), Expanded(child: Slider(value: _project.musicVolume, onChangeStart: (_) { _undo.add(_project); _redo.clear(); }, onChanged: (value) => _changeProject(_project.copyWith(musicVolume: value), recordUndo: false))), Text('${(_project.musicVolume * 100).round()}%', style: const TextStyle(fontSize: 10))]),
+              Row(children: [const Text('Start', style: TextStyle(fontSize: 10)), Expanded(child: Slider(value: _project.musicOffsetMs.clamp(0, _project.durationMs).toDouble(), max: _project.durationMs.clamp(1, 86400000).toDouble(), onChangeStart: (_) { _undo.add(_project); _redo.clear(); }, onChanged: (value) => _changeProject(_project.copyWith(musicOffsetMs: value.round()), recordUndo: false))), Text(_time(_project.musicOffsetMs), style: const TextStyle(fontSize: 10))]),
+            ],
+            if (_project.overlays.isNotEmpty) ...[
+              const SizedBox(height: 7),
+              for (final overlay in _project.overlays) Card(child: ListTile(dense: true, leading: Icon(Icons.title_rounded, color: Color(overlay.color)), title: Text(overlay.text, maxLines: 1, overflow: TextOverflow.ellipsis), subtitle: Text('${_time(overlay.startMs)} – ${_time(overlay.endMs)}'), trailing: IconButton(tooltip: 'Remove text overlay', onPressed: () => _changeProject(_project.copyWith(overlays: _project.overlays.where((item) => item.id != overlay.id).toList())), icon: const Icon(Icons.close_rounded))))
+            ],
+            if (_project.imageOverlays.isNotEmpty) ...[
+              const SizedBox(height: 5),
+              for (final overlay in _project.imageOverlays) Card(child: ListTile(dense: true, onTap: () => _editImageOverlay(overlay), leading: const Icon(Icons.image_outlined), title: Text(overlay.name, maxLines: 1, overflow: TextOverflow.ellipsis), subtitle: Text('Tap to position · ${_time(overlay.startMs)} – ${_time(overlay.endMs)}'), trailing: IconButton(tooltip: 'Remove image overlay', onPressed: () => _changeProject(_project.copyWith(imageOverlays: _project.imageOverlays.where((item) => item.id != overlay.id).toList())), icon: const Icon(Icons.close_rounded))))
+            ],
+            ExpansionTile(title: const Text('Clip sound & picture adjustments', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)), tilePadding: EdgeInsets.zero, children: [
+              _adjustmentSlider('Original audio', clip.volume, 0, 1, (value) => _updateSelectedClip(clip.copyWith(volume: value), recordUndo: false), label: '${(clip.volume * 100).round()}%'),
+              _adjustmentSlider('Brightness', clip.brightness, -.25, .25, (value) => _updateSelectedClip(clip.copyWith(brightness: value), recordUndo: false)),
+              _adjustmentSlider('Contrast', clip.contrast, -.3, .3, (value) => _updateSelectedClip(clip.copyWith(contrast: value), recordUndo: false)),
+              _adjustmentSlider('Saturation', clip.saturation, -20, 30, (value) => _updateSelectedClip(clip.copyWith(saturation: value), recordUndo: false)),
+            ]),
+            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _splitAtPlayhead, icon: const Icon(Icons.content_cut_rounded), label: const Text('Split at playhead'))), const SizedBox(width: 8), Expanded(child: OutlinedButton.icon(onPressed: _addClips, icon: const Icon(Icons.add_rounded), label: const Text('Add clips')))]),
+            Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _duplicateSelected, icon: const Icon(Icons.control_point_duplicate_rounded), label: const Text('Duplicate clip'))), const SizedBox(width: 8), Expanded(child: OutlinedButton.icon(onPressed: _removeSelected, icon: const Icon(Icons.delete_outline_rounded), label: const Text('Remove clip')))]),
+            const SizedBox(height: 6),
+            const Text('Drag clips to reorder. Canvas framing, rotation, clip audio, picture adjustments, timed text, and optional music are applied during export.', style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.4)),
             const SizedBox(height: 5),
             const Text('One rewarded ad unlocks one watermark-free project export.', style: TextStyle(color: Colors.white38, fontSize: 10)),
             if (_exportPath != null) ...[
