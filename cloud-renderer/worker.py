@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json, os, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
+import requests
 from pathlib import Path
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
@@ -44,12 +45,14 @@ def storage_download(object_path: str, destination: Path):
             out.write(chunk)
 
 def storage_upload(source: Path, object_path: str):
+    # Stream the output from disk; do not load large rendered files into memory.
     url = SUPABASE_URL + "/storage/v1/object/" + BUCKET + "/" + urllib.parse.quote(object_path, safe="/")
-    req = urllib.request.Request(url, data=source.read_bytes(), method="POST", headers={
-        "apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}",
-        "Content-Type": "video/mp4", "x-upsert": "false",
-    })
-    with urllib.request.urlopen(req, timeout=300) as response: response.read()
+    with source.open("rb") as stream:
+        response = requests.post(url, data=stream, timeout=(30, 900), headers={
+            "apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}",
+            "Content-Type": "video/mp4", "x-upsert": "false",
+        })
+    response.raise_for_status()
 
 def probe(path: Path):
     raw = subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)], timeout=45)
@@ -78,6 +81,7 @@ def render(job, work: Path):
     if codec not in ("h264", "h265"): raise ValueError("unsupported_codec")
 
     local = []
+    clip_lengths = []
     input_args = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-loglevel", "error"]
     probe_info = []
     for i, clip in enumerate(clips):
@@ -94,7 +98,7 @@ def render(job, work: Path):
         end = safe_number(clip.get("endMs", int(duration * 1000)), 1, duration * 1000, "trim_end") / 1000
         if end <= start or end - start > MAX_DURATION: raise ValueError("invalid_trim_range")
         input_args += ["-ss", str(start), "-t", str(end-start), "-i", str(path)]
-        local.append(path); probe_info.append((v, any(s.get("codec_type") == "audio" for s in meta.get("streams", []))))
+        local.append(path); clip_lengths.append(end-start); probe_info.append((v, any(s.get("codec_type") == "audio" for s in meta.get("streams", []))))
     music_path = None
     music = plan.get("musicPath")
     if music:
@@ -135,7 +139,7 @@ def render(job, work: Path):
         if has_audio:
             filters.append(f"[{i}:a]asetpts=PTS-STARTPTS,volume={volume}[a{i}]")
         else:
-            filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration=1800,asetpts=PTS-STARTPTS[a{i}]")
+            filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={clip_lengths[i]:.6f},asetpts=PTS-STARTPTS[a{i}]")
         audio_labels.append(f"[a{i}]")
     filters.append("".join(video_labels + audio_labels) + f"concat=n={len(clips)}:v=1:a=1[vcat][acat]")
     video_label = "[vcat]"
@@ -205,7 +209,7 @@ def main():
             if not job:
                 time.sleep(POLL_SECONDS); continue
             try:
-                update_job(job["id"], status="processing", progress=0, worker_id=WORKER_ID, attempts=int(job.get("attempts",0))+1)
+                update_job(job["id"], status="processing", progress=0, worker_id=WORKER_ID)
                 with tempfile.TemporaryDirectory(prefix="vyntra-render-") as directory:
                     output, metadata = render(job, Path(directory))
                     update_job(job["id"], status="finalizing", progress=96)
