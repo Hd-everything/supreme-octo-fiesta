@@ -273,7 +273,15 @@ def main():
                 message = str(exc)
                 code = message.split(":",1)[0][:80] or "render_failed"
                 print("job failed", job.get("id"), code, flush=True)
-                update_job(job["id"], status="failed", error_code=code, progress=0, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                retryable = (
+                    isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
+                    or exc.__class__.__module__.startswith("requests.")
+                    or code == "ffmpeg_failed"
+                )
+                if int(job.get("attempts", 0)) < 3 and retryable:
+                    update_job(job["id"], status="queued", error_code=code, progress=0)
+                else:
+                    update_job(job["id"], status="failed", error_code=code, progress=0, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         except Exception as exc:
             print("worker loop error", type(exc).__name__, flush=True)
             time.sleep(POLL_SECONDS)
