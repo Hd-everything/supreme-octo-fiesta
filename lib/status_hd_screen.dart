@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'media_manager_screen.dart';
 import 'models/edit_project.dart';
@@ -158,8 +158,22 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
         if (_rendering) ...[const SizedBox(height: 12), LinearProgressIndicator(value: _progress > 0 ? _progress : null)],
         const SizedBox(height: 16), Text(_status, style: const TextStyle(color: Colors.white70)),
         if (_outputPath != null) ...[
-          const SizedBox(height: 10), SelectableText(_outputPath!, style: const TextStyle(fontSize: 12, color: Colors.white54)),
-          const Text('Output is currently in temporary app storage; save it permanently before clearing app data.',
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: () async {
+              final path = _outputPath;
+              if (path == null || !File(path).existsSync()) {
+                setState(() => _status = 'The rendered file is no longer available. Export it again.');
+                return;
+              }
+              await Share.shareXFiles([XFile(path, mimeType: 'video/mp4', name: 'vyntra_status_export.mp4')], text: 'Status video exported with Vyntra');
+            },
+            icon: const Icon(Icons.save_alt_rounded),
+            label: const Text('Save or share rendered video'),
+          ),
+          const SizedBox(height: 6),
+          SelectableText(_outputPath!, style: const TextStyle(fontSize: 12, color: Colors.white54)),
+          const Text('The share sheet lets you save the rendered MP4 to device storage or send it to another app.',
             style: TextStyle(fontSize: 12, color: Colors.white54)),
         ],
         const SizedBox(height: 24),
