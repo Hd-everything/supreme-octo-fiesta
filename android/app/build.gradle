@@ -9,9 +9,9 @@ android { namespace 'com.ptip.statushd'; compileSdk 36
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.15.0'
-    implementation 'androidx.media3:media3-common:1.5.1'
-    implementation 'androidx.media3:media3-effect:1.5.1'
-    implementation 'androidx.media3:media3-transformer:1.5.1'
+    implementation 'androidx.media3:media3-common:1.11.1'
+    implementation 'androidx.media3:media3-effect:1.11.1'
+    implementation 'androidx.media3:media3-transformer:1.11.1'
     // The Flutter tflite_flutter plugin supplies the LiteRT runtime. Depend on
     // its API artifact here so the native video bridge does not package a
     // second copy of libtensorflowlite_jni.so.
