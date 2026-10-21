@@ -153,6 +153,104 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
     _changeProject(_project.copyWith(overlays: [..._project.overlays, result]));
   }
 
+
+  Future<void> _editTextOverlay(EditTextOverlay overlay) async {
+    final textController = TextEditingController(text: overlay.text);
+    var startMs = overlay.startMs.toDouble();
+    var endMs = overlay.endMs.toDouble();
+    var fontSize = overlay.fontSize;
+    var x = overlay.x;
+    var y = overlay.y;
+    var color = overlay.color;
+    final duration = _project.durationMs.toDouble().clamp(1, 86400000).toDouble();
+    const colors = <(String, int)>[
+      ('White', 0xFFFFFFFF),
+      ('Yellow', 0xFFFFD54F),
+      ('Cyan', 0xFF80DEEA),
+      ('Pink', 0xFFF48FB1),
+      ('Black', 0xFF000000),
+    ];
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, updateDialog) => AlertDialog(
+          title: const Text('Edit text layer'),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                TextField(controller: textController, autofocus: true, maxLength: 160, decoration: const InputDecoration(labelText: 'Text')),
+                const SizedBox(height: 12),
+                Row(children: [
+                  const SizedBox(width: 72, child: Text('Size')),
+                  Expanded(child: Slider(min: 16, max: 96, value: fontSize.clamp(16, 96), onChanged: (value) => updateDialog(() => fontSize = value))),
+                  Text(fontSize.round().toString()),
+                ]),
+                const SizedBox(height: 6),
+                const Text('TEXT COLOR', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.1)),
+                const SizedBox(height: 8),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final item in colors)
+                    ChoiceChip(
+                      label: Text(item.$1),
+                      selected: color == item.$2,
+                      avatar: CircleAvatar(backgroundColor: Color(item.$2), radius: 7),
+                      onSelected: (_) => updateDialog(() => color = item.$2),
+                    ),
+                ]),
+                const SizedBox(height: 12),
+                Row(children: [
+                  const SizedBox(width: 72, child: Text('Horizontal')),
+                  Expanded(child: Slider(min: -1, max: 1, value: x.clamp(-1, 1), onChanged: (value) => updateDialog(() => x = value))),
+                ]),
+                Row(children: [
+                  const SizedBox(width: 72, child: Text('Vertical')),
+                  Expanded(child: Slider(min: -1, max: 1, value: y.clamp(-1, 1), onChanged: (value) => updateDialog(() => y = value))),
+                ]),
+                const SizedBox(height: 10),
+                const Text('VISIBLE TIMELINE RANGE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.1)),
+                RangeSlider(
+                  min: 0,
+                  max: duration,
+                  values: RangeValues(startMs.clamp(0, duration), endMs.clamp(0, duration)),
+                  labels: RangeLabels(_time(startMs.round()), _time(endMs.round())),
+                  onChanged: (range) => updateDialog(() {
+                    startMs = range.start;
+                    endMs = range.end;
+                  }),
+                ),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Text('In ' + _time(startMs.round()), style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                  Text('Out ' + _time(endMs.round()), style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                ]),
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Apply')),
+          ],
+        ),
+      ),
+    );
+    final text = textController.text.trim();
+    textController.dispose();
+    if (save != true || !mounted || text.isEmpty) return;
+    final start = startMs.round().clamp(0, _project.durationMs - 1).toInt();
+    final end = endMs.round().clamp(start + 1, _project.durationMs).toInt();
+    final updated = EditTextOverlay(
+      id: overlay.id,
+      text: text,
+      startMs: start,
+      endMs: end,
+      color: color,
+      fontSize: fontSize,
+      x: x,
+      y: y,
+    );
+    _changeProject(_project.copyWith(overlays: _project.overlays.map((item) => item.id == overlay.id ? updated : item).toList()));
+  }
+
   Future<void> _addMusic() async {
     final selection = await FilePicker.platform.pickFiles(type: FileType.audio, allowMultiple: false, withData: false);
     if (selection == null || selection.files.isEmpty || selection.files.single.path == null || !mounted) return;
@@ -450,7 +548,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
     if (choice != true || !mounted) return;
     final sourceClips = List<EditClip>.of(_project.clips);
     final available = sourceClips.fold<int>(0, (sum, item) => sum + item.lengthMs);
-    final floorDuration = sourceClips.length * 1000;
+    final floorDuration = sourceClips.fold<int>(0, (sum, item) => sum + (item.lengthMs < 1000 ? item.lengthMs : 1000));
     final target = (targetSeconds * 1000).clamp(floorDuration, available).toInt();
     final styleValues = switch (style) {
       'Vibrant' => (brightness: .025, contrast: .20, saturation: 20.0),
@@ -500,7 +598,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
           id: DateTime.now().microsecondsSinceEpoch.toString(),
           text: title.trim(),
           startMs: 0,
-          endMs: edited.fold<int>(0, (sum, item) => sum + item.lengthMs).clamp(1000, 5000),
+          endMs: edited.fold<int>(0, (sum, item) => sum + item.lengthMs).clamp(1, 5000),
           fontSize: 36,
           y: .48,
         ));
@@ -610,8 +708,12 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.title_rounded),
                     title: Text(overlay.text, maxLines: 1, overflow: TextOverflow.ellipsis),
-                    subtitle: Text('${_time(overlay.startMs)} – ${_time(overlay.endMs)}'),
-                    trailing: IconButton(tooltip: 'Remove text layer', onPressed: () { _changeProject(_project.copyWith(overlays: _project.overlays.where((item) => item.id != overlay.id).toList())); updateSheet(() {}); }, icon: const Icon(Icons.close_rounded)),
+                    subtitle: Text('${_time(overlay.startMs)} – ${_time(overlay.endMs)} · ${overlay.fontSize.round()} px'),
+                    onTap: () async { Navigator.pop(sheetContext); await _editTextOverlay(overlay); },
+                    trailing: Wrap(mainAxisSize: MainAxisSize.min, children: [
+                      IconButton(tooltip: 'Edit text layer', onPressed: () async { Navigator.pop(sheetContext); await _editTextOverlay(overlay); }, icon: const Icon(Icons.tune_rounded)),
+                      IconButton(tooltip: 'Remove text layer', onPressed: () { _changeProject(_project.copyWith(overlays: _project.overlays.where((item) => item.id != overlay.id).toList())); updateSheet(() {}); }, icon: const Icon(Icons.close_rounded)),
+                    ]),
                   ),
               ]);
               break;
