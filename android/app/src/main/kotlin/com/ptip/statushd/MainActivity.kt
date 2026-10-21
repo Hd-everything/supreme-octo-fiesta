@@ -407,14 +407,14 @@ class MainActivity : FlutterActivity() {
                 val outputFile = File(outputPath)
                 outputFile.parentFile?.mkdirs()
                 outputFile.delete()
-                val videoSequence = EditedMediaItemSequence(editedItems)
+                val videoSequence = EditedMediaItemSequence.withAudioAndVideoFrom(editedItems)
                 val composition = if (musicPath.isNullOrBlank()) {
                     Composition.Builder(videoSequence).build()
                 } else {
                     val audioItem = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(File(musicPath))))
                         .setEffects(Effects(channelGainProcessors(musicVolume), emptyList()))
                         .build()
-                    val audioSequenceBuilder = EditedMediaItemSequence.Builder(emptyList<EditedMediaItem>())
+                    val audioSequenceBuilder = EditedMediaItemSequence.Builder(setOf(androidx.media3.common.C.TRACK_TYPE_AUDIO))
                     if (musicOffsetMs > 0L) audioSequenceBuilder.addGap(musicOffsetMs * 1000L)
                     audioSequenceBuilder.addItem(audioItem).setIsLooping(true)
                     Composition.Builder(videoSequence, audioSequenceBuilder.build()).build()
@@ -833,9 +833,12 @@ class MainActivity : FlutterActivity() {
 
     private fun channelGainProcessors(gain: Float): List<AudioProcessor> {
         val processor = ChannelMixingAudioProcessor()
+        val safeGain = gain.coerceIn(0f, 1f)
         for (channelCount in 1..8) {
-            val matrix = ChannelMixingMatrix.createForConstantPower(channelCount, channelCount).scaleBy(gain.coerceIn(0f, 1f))
-            processor.putChannelMixingMatrix(matrix)
+            val coefficients = FloatArray(channelCount * channelCount) { index ->
+                if (index / channelCount == index % channelCount) safeGain else 0f
+            }
+            processor.putChannelMixingMatrix(ChannelMixingMatrix(channelCount, channelCount, coefficients))
         }
         return listOf(processor)
     }
