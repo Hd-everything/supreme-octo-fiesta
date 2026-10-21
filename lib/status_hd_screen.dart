@@ -29,7 +29,9 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
   final _processing = VideoProcessingService();
   DeviceMedia? _source;
   OutputResolution _resolution = OutputResolution.p1080;
-  String _cloudResolution = '2160p';
+  String _cloudResolution = '1080p';
+  Set<String> _cloudResolutions = <String>{};
+  bool _useCloud = false;
   bool _processingVideo = false;
   bool _loadingCapabilities = true;
   bool _cloudAvailable = false;
@@ -92,15 +94,10 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
       if (!mounted) return;
       setState(() {
         _cloudAvailable = caps['workerReady'] == true;
+        _cloudResolutions = resolutions;
         _loadingCapabilities = false;
-        if (resolutions.contains('4320p')) {
-          _cloudResolution = '4320p';
-        } else if (resolutions.contains('2160p')) {
-          _cloudResolution = '2160p';
-        } else if (resolutions.contains('1440p')) {
-          _cloudResolution = '1440p';
-        } else {
-          _cloudResolution = '1080p';
+        if (!resolutions.contains(_cloudResolution)) {
+          _cloudResolution = resolutions.contains('1080p') ? '1080p' : (resolutions.isNotEmpty ? resolutions.first : '1080p');
         }
       });
     } catch (_) {
@@ -176,7 +173,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
   Future<void> _export() async {
     final source = _source;
     if (source == null || _processingVideo) return;
-    final cloudMode = _highResolution || _cloudResolution == '1440p' || _cloudResolution == '1080p';
+    final cloudMode = _useCloud || _highResolution;
     setState(() {
       _processingVideo = true;
       _progress = 0;
@@ -309,10 +306,10 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
     final accent = Theme.of(context).colorScheme.primary;
     final preview = _preview;
     final cloudOptions = <(String, String)>[
-      if (_cloudAvailable) ('1080p', '1080p · Cloud'),
-      if (_cloudAvailable) ('1440p', '1440p · Cloud'),
-      if (_cloudAvailable) ('2160p', '4K · Cloud'),
-      if (_cloudAvailable && _cloudResolution == '4320p') ('4320p', '8K · Cloud'),
+      if (_cloudAvailable && _cloudResolutions.contains('1080p')) ('1080p', '1080p · Cloud'),
+      if (_cloudAvailable && _cloudResolutions.contains('1440p')) ('1440p', '1440p · Cloud'),
+      if (_cloudAvailable && _cloudResolutions.contains('2160p')) ('2160p', '4K · Cloud'),
+      if (_cloudAvailable && _cloudResolutions.contains('4320p')) ('4320p', '8K · Cloud'),
     ];
     return Scaffold(
       appBar: AppBar(title: const Text('Status HD')),
@@ -359,7 +356,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
                 ChoiceChip(
                   label: Text(option.$2),
                   selected: _resolution == option.$1,
-                  onSelected: _processingVideo ? null : (_) => setState(() => _resolution = option.$1),
+                  onSelected: _processingVideo ? null : (_) => setState(() { _resolution = option.$1; _useCloud = false; }),
                 ),
             ]),
             const SizedBox(height: 18),
@@ -370,16 +367,23 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
             ]),
             if (_cloudAvailable) ...[
               const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _useCloud,
+                onChanged: _processingVideo ? null : (value) => setState(() => _useCloud = value),
+                title: const Text('Render in cloud'),
+                subtitle: const Text('Use remote FFmpeg for 1080p, 1440p, 4K or 8K. Uploads your source video.'),
+              ),
               Wrap(spacing: 8, runSpacing: 8, children: [
                 for (final option in cloudOptions)
                   ChoiceChip(
                     label: Text(option.$2),
-                    selected: _cloudResolution == option.$1,
-                    onSelected: _processingVideo ? null : (_) => setState(() => _cloudResolution = option.$1),
+                    selected: _cloudResolution == option.$1 && _useCloud,
+                    onSelected: _processingVideo ? null : (_) => setState(() { _cloudResolution = option.$1; _useCloud = true; }),
                   ),
               ]),
               const SizedBox(height: 6),
-              const Text('4K/8K are rendered on the cloud worker, not on your phone. 8K appears only when the deployed worker advertises it.', style: TextStyle(color: Colors.white60, fontSize: 12)),
+              const Text('4K/8K are rendered on the cloud worker, not on your phone. Cloud 1080p and 1440p are available too. Options appear only when the deployed worker advertises them.', style: TextStyle(color: Colors.white60, fontSize: 12)),
             ] else
               const Padding(
                 padding: EdgeInsets.only(top: 6),
