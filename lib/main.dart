@@ -41,6 +41,14 @@ class VyntraStartup extends StatefulWidget {
 class _VyntraStartupState extends State<VyntraStartup> {
   late Future<SharedPreferences> _preferences = widget.preferences;
 
+  Future<SharedPreferences> _temporaryPreferences() async {
+    // This in-memory fallback is used only after the platform preference
+    // channel fails. It leaves on-device preferences untouched, but changes
+    // made in limited mode are not saved across an app restart.
+    SharedPreferences.setMockInitialValues({});
+    return SharedPreferences.getInstance();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -63,12 +71,36 @@ class _VyntraStartupState extends State<VyntraStartup> {
                       const Icon(Icons.video_library_outlined, size: 48),
                       const SizedBox(height: 16),
                       const Text('Vyntra could not load project storage.'),
+                      const SizedBox(height: 8),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 28),
+                        child: SelectableText(
+                          snapshot.error.toString(),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white54, fontSize: 12),
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       FilledButton(
                         onPressed: () => setState(
                           () => _preferences = SharedPreferences.getInstance(),
                         ),
                         child: const Text('Try again'),
+                      ),
+                      const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: () => setState(
+                          () => _preferences = _temporaryPreferences(),
+                        ),
+                        child: const Text('Continue with temporary storage'),
+                      ),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 28),
+                        child: Text(
+                          'Temporary mode keeps saved files untouched, but new projects and settings from this session will not persist after closing the app.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white38, fontSize: 11),
+                        ),
                       ),
                     ],
                   ),
