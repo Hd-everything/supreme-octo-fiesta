@@ -376,6 +376,142 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
         SizedBox(width: 38, child: Text(labelText ?? value.toStringAsFixed(2), textAlign: TextAlign.end, style: const TextStyle(fontSize: 9, color: Colors.white54))),
       ]);
 
+
+  Future<void> _autoEdit() async {
+    if (_exporting || _project.clips.isEmpty) return;
+    var style = 'Cinematic';
+    var ratio = _project.aspectRatio;
+    var targetSeconds = 30;
+    var addTitle = true;
+    final choice = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, updateDialog) => AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.auto_awesome_rounded),
+            SizedBox(width: 10),
+            Expanded(child: Text('Auto Edit')),
+          ]),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const Text('Build a first draft from your clips. Every choice remains editable on the timeline.', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 18),
+              const Text('LOOK', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+              const SizedBox(height: 7),
+              for (final option in const [
+                ('Cinematic', 'Balanced contrast · restrained color'),
+                ('Vibrant', 'More color · punchier contrast'),
+                ('Natural', 'Light touch · closer to the source'),
+                ('Soft', 'Gentler contrast · softer color'),
+              ])
+                RadioListTile<String>(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: option.$1,
+                  groupValue: style,
+                  title: Text(option.$1, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  subtitle: Text(option.$2, style: const TextStyle(fontSize: 11)),
+                  onChanged: (value) => updateDialog(() => style = value!),
+                ),
+              const SizedBox(height: 10),
+              const Text('CANVAS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+              const SizedBox(height: 7),
+              Wrap(spacing: 6, runSpacing: 6, children: [
+                for (final value in const ['Original', '9:16', '16:9', '1:1', '4:5'])
+                  ChoiceChip(label: Text(value), selected: ratio == value, onSelected: (_) => updateDialog(() => ratio = value)),
+              ]),
+              const SizedBox(height: 16),
+              const Text('TARGET LENGTH', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+              Slider(
+                min: 10, max: 60, divisions: 5, value: targetSeconds.toDouble(),
+                label: '$targetSeconds sec',
+                onChanged: (value) => updateDialog(() => targetSeconds = value.round()),
+              ),
+              Center(child: Text('$targetSeconds seconds', style: const TextStyle(fontWeight: FontWeight.w800))),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                value: addTitle,
+                title: const Text('Add an editable opening title'),
+                onChanged: (value) => updateDialog(() => addTitle = value ?? false),
+              ),
+              const SizedBox(height: 4),
+              const Text('Auto Edit uses local timeline rules and built-in picture controls. It does not claim to use cloud AI or analyze scene content yet.', style: TextStyle(fontSize: 11, color: Colors.white60, height: 1.4)),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton.icon(onPressed: () => Navigator.pop(dialogContext, true), icon: const Icon(Icons.auto_awesome_rounded), label: const Text('Build draft')),
+          ],
+        ),
+      ),
+    );
+    if (choice != true || !mounted) return;
+    final sourceClips = List<EditClip>.of(_project.clips);
+    final available = sourceClips.fold<int>(0, (sum, item) => sum + item.lengthMs);
+    final floorDuration = sourceClips.length * 1000;
+    final target = (targetSeconds * 1000).clamp(floorDuration, available).toInt();
+    final styleValues = switch (style) {
+      'Vibrant' => (brightness: .025, contrast: .20, saturation: 20.0),
+      'Natural' => (brightness: 0.0, contrast: .04, saturation: 3.0),
+      'Soft' => (brightness: .025, contrast: -.08, saturation: 2.0),
+      _ => (brightness: .015, contrast: .13, saturation: 8.0),
+    };
+    final edited = <EditClip>[];
+    var remainingTarget = target;
+    var remainingSource = available;
+    for (var i = 0; i < sourceClips.length; i++) {
+      final clip = sourceClips[i];
+      final isLast = i == sourceClips.length - 1;
+      final desired = isLast
+          ? remainingTarget
+          : (remainingTarget * clip.lengthMs / remainingSource).round();
+      final minimum = clip.lengthMs < 1000 ? clip.lengthMs : 1000;
+      final length = desired.clamp(minimum, clip.lengthMs).toInt();
+      final start = clip.startMs + ((clip.lengthMs - length) ~/ 2);
+      edited.add(clip.copyWith(
+        startMs: start,
+        endMs: start + length,
+        brightness: styleValues.brightness,
+        contrast: styleValues.contrast,
+        saturation: styleValues.saturation,
+      ));
+      remainingTarget = (remainingTarget - length).clamp(0, remainingTarget).toInt();
+      remainingSource -= clip.lengthMs;
+    }
+    var overlays = List<EditTextOverlay>.of(_project.overlays);
+    if (addTitle) {
+      final titleController = TextEditingController(text: _project.name);
+      final title = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Opening title'),
+          content: TextField(controller: titleController, autofocus: true, maxLength: 48, decoration: const InputDecoration(hintText: 'Your title')),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Skip')),
+            FilledButton(onPressed: () => Navigator.pop(context, titleController.text.trim()), child: const Text('Use title')),
+          ],
+        ),
+      );
+      titleController.dispose();
+      if (title != null && title.trim().isNotEmpty) {
+        overlays.add(EditTextOverlay(
+          id: DateTime.now().microsecondsSinceEpoch.toString(),
+          text: title.trim(),
+          startMs: 0,
+          endMs: edited.fold<int>(0, (sum, item) => sum + item.lengthMs).clamp(1000, 5000),
+          fontSize: 36,
+          y: .48,
+        ));
+      }
+    }
+    if (!mounted) return;
+    _changeProject(_project.copyWith(clips: edited, aspectRatio: ratio, overlays: overlays));
+    await _loadClipPreview(0);
+    if (mounted) _message('Auto Edit draft created. Review the timeline, fine-tune it, then export.');
+  }
+
   Future<void> _openEditorTool(String tool) async {
     await showModalBottomSheet<void>(
       context: context,
@@ -499,8 +635,36 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                 _adjustmentSlider('Brightness', clip.brightness, -.25, .25, (value) { _updateSelectedClip(clip.copyWith(brightness: value), recordUndo: false); updateSheet(() {}); }),
                 _adjustmentSlider('Contrast', clip.contrast, -.3, .3, (value) { _updateSelectedClip(clip.copyWith(contrast: value), recordUndo: false); updateSheet(() {}); }),
                 _adjustmentSlider('Saturation', clip.saturation, -20, 30, (value) { _updateSelectedClip(clip.copyWith(saturation: value), recordUndo: false); updateSheet(() {}); }),
+                const SizedBox(height: 14),
+                const Text('QUICK LOOKS', style: TextStyle(fontSize: 10, letterSpacing: 1.2, fontWeight: FontWeight.w900, color: Colors.white70)),
                 const SizedBox(height: 8),
-                const Text('Adjustments are applied during export; preview rendering may not reflect every adjustment live.', style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4)),
+                Wrap(spacing: 7, runSpacing: 7, children: [
+                  for (final look in const ['Original', 'Cinematic', 'Vibrant', 'Natural', 'Soft'])
+                    ActionChip(
+                      label: Text(look),
+                      onPressed: _exporting ? null : () {
+                        final values = switch (look) {
+                          'Cinematic' => (b: .015, c: .13, s: 8.0),
+                          'Vibrant' => (b: .025, c: .20, s: 20.0),
+                          'Natural' => (b: 0.0, c: .04, s: 3.0),
+                          'Soft' => (b: .025, c: -.08, s: 2.0),
+                          _ => (b: 0.0, c: 0.0, s: 0.0),
+                        };
+                        _updateSelectedClip(clip.copyWith(brightness: values.b, contrast: values.c, saturation: values.s));
+                        updateSheet(() {});
+                      },
+                    ),
+                ]),
+                const SizedBox(height: 8),
+                Align(alignment: Alignment.centerRight, child: TextButton.icon(
+                  onPressed: _exporting ? null : () {
+                    _updateSelectedClip(clip.copyWith(brightness: 0, contrast: 0, saturation: 0));
+                    updateSheet(() {});
+                  },
+                  icon: const Icon(Icons.restart_alt_rounded, size: 17),
+                  label: const Text('Reset picture'),
+                )),
+                const Text('Looks are baked into the exported video. The current preview does not apply these color effects live.', style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4)),
               ]);
               break;
             case 'Layers':
@@ -807,6 +971,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                     _editorToolButton(Icons.graphic_eq_rounded, 'Audio', accent, () => _openEditorTool('Audio')),
                     _editorToolButton(Icons.auto_fix_high_rounded, 'Adjust', accent, () => _openEditorTool('Adjust')),
                     _editorToolButton(Icons.layers_outlined, 'Layers', accent, () => _openEditorTool('Layers')),
+                    _editorToolButton(Icons.auto_awesome_rounded, 'Auto Edit', accent, _autoEdit),
                     _editorToolButton(Icons.video_library_outlined, 'Media', accent, () => _openEditorTool('Media')),
                   ],
                 ),
