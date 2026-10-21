@@ -61,6 +61,11 @@ Deno.serve(async (req: Request) => {
   try { body = await req.json(); } catch { return json({ error: "invalid_json" }, 400); }
   const action = body.action;
   try {
+    if (action === "capabilities") {
+      const workerReady = Deno.env.get("VYNTRA_RENDER_WORKER_READY") === "true";
+      const enable8k = workerReady && Deno.env.get("VYNTRA_ENABLE_8K") === "true";
+      return json({ workerReady, resolutions: workerReady ? ["720p", "1080p", "1440p", "2160p", ...(enable8k ? ["4320p"] : [])] : [], codecs: workerReady ? ["h264", "h265"] : [], maxUploadBytes });
+    }
     if (action === "prepare_upload") {
       const name = typeof body.fileName === "string" ? body.fileName.split(/[\\/]/).pop()!.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100) : "media.bin";
       const mime = typeof body.contentType === "string" ? body.contentType : "";
