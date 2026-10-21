@@ -230,7 +230,14 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
                     VideoPlayer(preview),
                     IconButton.filledTonal(
                       tooltip: preview.value.isPlaying ? 'Pause preview' : 'Play preview',
-                      onPressed: () {\n                        if (preview.value.isPlaying) {\n                          unawaited(preview.pause());\n                        } else {\n                          unawaited(preview.play());\n                        }\n                        setState(() {});\n                      },
+                      onPressed: () {
+                        if (preview.value.isPlaying) {
+                          unawaited(preview.pause());
+                        } else {
+                          unawaited(preview.play());
+                        }
+                        setState(() {});
+                      },
                       icon: Icon(preview.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
                     ),
                   ]),
