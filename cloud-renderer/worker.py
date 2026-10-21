@@ -184,7 +184,9 @@ def render(job, work: Path):
     for i, overlay in enumerate(plan.get("overlays", [])):
         text = str(overlay.get("text", ""))
         if not text or len(text) > 160: raise ValueError("invalid_text_overlay")
-        escaped = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%").replace(",", "\\,").replace("[", "\\[").replace("]", "\\]")
+        # Use a text file rather than interpolating user text into a filter expression.
+        text_file = work / f"text_{i}.txt"
+        text_file.write_text(text, encoding="utf-8")
         start = safe_number(overlay.get("startMs", 0), 0, MAX_DURATION*1000, "overlay_start") / 1000
         end = safe_number(overlay.get("endMs", 1000), start*1000+1, MAX_DURATION*1000, "overlay_end") / 1000
         font_size = int(safe_number(overlay.get("fontSize", 34), 16, 96, "font_size"))
@@ -192,7 +194,7 @@ def render(job, work: Path):
         y = safe_number(overlay.get("y", .55), -1, 1, "overlay_y")
         color = int(overlay.get("color", 0xFFFFFFFF)) & 0xFFFFFF
         next_label = f"[vt{i}]"
-        filters.append(f"{video_label}drawtext=text='{escaped}':fontsize={font_size}:fontcolor=0x{color:06X}:x=(w-text_w)/2+({x})*w/2:y=(h-text_h)/2+({y})*h/2:enable='between(t,{start},{end})'{next_label}")
+        filters.append(f"{video_label}drawtext=textfile='{text_file}':fontsize={font_size}:fontcolor=0x{color:06X}:x=(w-text_w)/2+({x})*w/2:y=(h-text_h)/2+({y})*h/2:enable='between(t,{start},{end})'{next_label}")
         video_label = next_label
 
     for i, (image_index, overlay) in enumerate(image_inputs):
