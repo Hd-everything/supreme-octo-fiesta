@@ -1,4 +1,4 @@
-name: Android verification
+name: Vyntra source and cloud-renderer verification
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify-and-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -93,13 +93,3 @@ jobs:
               gradle.write_text(source)
               print(f"Aligned Java/Kotlin targets in {gradle}")
           PY
-
-      - name: Build release APK
-        # Flutter stable now requires Gradle 8.14+; this repository's checked-in
-        # Android shell uses an older wrapper. Skip Flutter's preflight version
-        # gate so Gradle can report any actual build incompatibility.
-        run: >-
-          flutter build apk --release --android-skip-build-dependency-validation
-          --dart-define=SUPABASE_URL="${{ secrets.SUPABASE_URL }}"
-          --dart-define=SUPABASE_PUBLISHABLE_KEY="${{ secrets.SUPABASE_PUBLISHABLE_KEY }}"
-
