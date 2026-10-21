@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/edit_project.dart';
+import 'supabase_config.dart';
 
 class CloudRenderException implements Exception {
   const CloudRenderException(this.message);
@@ -102,7 +103,7 @@ class CloudRenderService {
       clip['path'] = objectPaths[clip['path']]!;
       return clip;
     }).toList();
-    if (snapshot['musicPath'] is String) snapshot['musicPath'] = objectPaths[snapshot['musicPath']];
+    if (snapshot['musicPath'] is String && (snapshot['musicPath'] as String).isNotEmpty) snapshot['musicPath'] = objectPaths[snapshot['musicPath']];
     snapshot['imageOverlays'] = (snapshot['imageOverlays'] as List).map((raw) {
       final overlay = Map<String, dynamic>.from(raw as Map);
       overlay['path'] = objectPaths[overlay['path']]!;
@@ -148,7 +149,7 @@ class CloudRenderService {
     if (url == null) throw const CloudRenderException('The export completed but its download link could not be created.');
     final downloadUri = url.startsWith('http')
         ? Uri.parse(url)
-        : Uri.parse('${const String.fromEnvironment('SUPABASE_URL')}/storage/v1${url.startsWith('/') ? url : '/$url'}');
+        : Uri.parse('$supabaseUrl/storage/v1${url.startsWith('/') ? url : '/$url'}');
     final outputPath = '${Directory.systemTemp.path}/vyntra_cloud_${jobId}.mp4';
     final httpClient = HttpClient();
     final request = await httpClient.getUrl(downloadUri);
@@ -239,7 +240,6 @@ class CloudRenderService {
     '8k_not_enabled' || '8k_not_enabled_on_worker' => '8K export is not enabled on the deployed worker.',
     'active_job_limit' => 'You already have two active cloud exports.',
     'invalid_media_path' || 'media_not_owned' => 'A media file could not be verified for this account.',
-    'unsupported_effect:image_overlays' => 'This project uses image overlays that this worker version does not support yet.',
     'worker_lost' => 'The cloud worker stopped unexpectedly. Please submit the export again.',
     'ffmpeg_failed' => 'FFmpeg could not render this project. Check the source media and edit settings.',
     _ => 'Cloud export failed (${code ?? 'unknown_error'}). Your original project has not been changed.',
