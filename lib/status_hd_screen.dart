@@ -4,14 +4,18 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:video_player/video_player.dart';
 
 import 'media_manager_screen.dart';
 import 'models/edit_project.dart';
 import 'services/ads/rewarded_ad_service.dart';
 import 'services/media_processing/video_processing_service.dart';
+import 'services/cloud_render_service.dart';
+import 'services/supabase_config.dart';
 
-/// Lightweight, on-device status-video preparation kept separate from the editor.
+/// Status HD is a separate, lightweight workflow. Standard sizes can render
+/// locally; high-resolution output is offered only by a ready cloud worker.
 class StatusHdScreen extends StatefulWidget {
   const StatusHdScreen({super.key, required this.preferences});
   final SharedPreferences preferences;
@@ -25,21 +29,36 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
   final _processing = VideoProcessingService();
   DeviceMedia? _source;
   OutputResolution _resolution = OutputResolution.p1080;
+  String _cloudResolution = '2160p';
   bool _processingVideo = false;
+  bool _loadingCapabilities = true;
+  bool _cloudAvailable = false;
+  bool _removeWatermark = false;
   double _progress = 0;
   String _status = 'Choose a video to prepare for status.';
   String? _outputPath;
   int? _outputBytes;
   VideoPlayerController? _preview;
   StreamSubscription<int>? _progressSubscription;
+  late final CloudRenderService? _cloud;
+
+  bool get _cloudConfigured => vyntraSupabaseConfigured && _cloud != null;
+  bool get _highResolution => _cloudResolution == '2160p' || _cloudResolution == '4320p';
 
   @override
   void initState() {
     super.initState();
+    _cloud = vyntraSupabaseConfigured
+        ? CloudRenderService(Supabase.instance.client, preferences: widget.preferences)
+        : null;
     unawaited(_ads.preload());
     _progressSubscription = _processing.progress.listen((value) {
-      if (mounted && _processingVideo) setState(() => _progress = value / 100);
+      if (mounted && _processingVideo) setState(() {
+        _progress = value / 100;
+        _status = 'On-device processing · ${value.clamp(0, 100)}%';
+      });
     });
+    unawaited(_loadCloudCapabilities());
   }
 
   @override
@@ -60,6 +79,70 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
   String _formatBytes(int bytes) {
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
     return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+
+  Future<void> _loadCloudCapabilities() async {
+    try {
+      if (!_cloudConfigured) {
+        if (mounted) setState(() { _loadingCapabilities = false; _cloudAvailable = false; });
+        return;
+      }
+      final caps = await _cloud!.capabilities();
+      final resolutions = (caps['resolutions'] as List? ?? const []).map((e) => e.toString()).toSet();
+      if (!mounted) return;
+      setState(() {
+        _cloudAvailable = caps['workerReady'] == true;
+        _loadingCapabilities = false;
+        if (resolutions.contains('4320p')) {
+          _cloudResolution = '4320p';
+        } else if (resolutions.contains('2160p')) {
+          _cloudResolution = '2160p';
+        } else if (resolutions.contains('1440p')) {
+          _cloudResolution = '1440p';
+        } else {
+          _cloudResolution = '1080p';
+        }
+      });
+    } catch (_) {
+      if (mounted) setState(() { _loadingCapabilities = false; _cloudAvailable = false; });
+    }
+  }
+
+  Future<bool> _ensureSignedIn() async {
+    if (!_cloudConfigured) {
+      setState(() => _status = 'Cloud rendering is not configured in this build. Standard on-device export remains available.');
+      return false;
+    }
+    if (_cloud!.isSignedIn) return true;
+    final email = TextEditingController();
+    final password = TextEditingController();
+    final credentials = await showDialog<(String, String)>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sign in for cloud rendering'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email')),
+          const SizedBox(height: 10),
+          TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, (email.text.trim(), password.text)), child: const Text('Sign in')),
+        ],
+      ),
+    );
+    if (credentials == null || credentials.$1.isEmpty || credentials.$2.isEmpty) return false;
+    try {
+      await _cloud!.signIn(credentials.$1, credentials.$2);
+      if (mounted) setState(() => _status = 'Signed in. Ready for secure cloud export.');
+      return true;
+    } catch (error) {
+      if (mounted) setState(() => _status = error.toString());
+      return false;
+    } finally {
+      email.dispose();
+      password.dispose();
+    }
   }
 
   Future<void> _pick() async {
@@ -83,43 +166,91 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
     });
   }
 
+  Future<bool> _earnExportAd() async {
+    setState(() => _status = 'Loading rewarded ad…');
+    final earned = await _ads.showForExport();
+    if (!earned && mounted) setState(() => _status = 'The rewarded ad was not completed or is unavailable. Try again later.');
+    return earned;
+  }
+
   Future<void> _export() async {
     final source = _source;
     if (source == null || _processingVideo) return;
+    final cloudMode = _highResolution || _cloudResolution == '1440p' || _cloudResolution == '1080p';
     setState(() {
       _processingVideo = true;
       _progress = 0;
-      _status = 'Preparing rewarded ad…';
+      _status = 'Preparing export…';
       _outputPath = null;
       _outputBytes = null;
     });
     try {
-      final earned = await _ads.showForExport();
-      if (!earned) {
-        if (mounted) setState(() => _status = 'The rewarded ad was not completed or is unavailable. Try again later.');
-        return;
-      }
+      if (!await _earnExportAd()) return;
       if (!mounted) return;
-      setState(() => _status = 'Inspecting source video…');
-      final metadata = await _processing.inspect(source.path);
-      final stamp = DateTime.now().microsecondsSinceEpoch;
-      final outputPath = '${Directory.systemTemp.path}/vyntra_status_$stamp.mp4';
-      final result = await _processing.process(ProcessingRequest.enhance(
-        inputPath: source.path,
-        outputPath: outputPath,
-        metadata: metadata,
-        enhancement: EnhancementConfiguration(
-          resolution: _resolution,
-          strength: EnhancementStrength.gentle,
-          brightness: 0.02,
-          contrast: 0.05,
-          saturation: 4,
-          sharpness: 0.12,
-          noiseReduction: 0,
-          watermark: false,
-        ),
-      ));
-      final outputFile = File(result.path);
+      String outputPath;
+      String outputLabel;
+      if (cloudMode) {
+        final signedIn = await _ensureSignedIn();
+        if (!signedIn || !mounted) return;
+        if (!_cloudAvailable) throw const CloudRenderException('The cloud worker is not currently available. Choose on-device 720p, 1080p, or 1440p instead.');
+        final metadata = await _processing.inspect(source.path);
+        final now = DateTime.now();
+        final id = 'status_${now.microsecondsSinceEpoch}';
+        final project = EditProject(
+          id: id,
+          name: 'Status HD export',
+          createdAt: now,
+          updatedAt: now,
+          aspectRatio: '9:16',
+          clips: [EditClip(
+            id: '${id}_clip',
+            path: source.path,
+            name: source.name,
+            durationMs: metadata.duration.inMilliseconds,
+          )],
+        );
+        final resolution = _cloudResolution;
+        final result = await _cloud!.renderProject(
+          project: project,
+          resolution: resolution,
+          onProgress: (p) {
+            if (mounted) setState(() {
+              _progress = p.progress.clamp(0, 1);
+              _status = '${p.message ?? p.stage} · ${(_progress * 100).round()}%';
+            });
+          },
+        );
+        outputPath = result['path'] as String;
+        outputLabel = switch (resolution) {
+          '4320p' => '8K (cloud)',
+          '2160p' => '4K (cloud)',
+          '1440p' => '1440p (cloud)',
+          _ => '1080p (cloud)',
+        };
+      } else {
+        setState(() => _status = 'Inspecting source video…');
+        final metadata = await _processing.inspect(source.path);
+        final stamp = DateTime.now().microsecondsSinceEpoch;
+        final path = '${Directory.systemTemp.path}/vyntra_status_$stamp.mp4';
+        final result = await _processing.process(ProcessingRequest.enhance(
+          inputPath: source.path,
+          outputPath: path,
+          metadata: metadata,
+          enhancement: EnhancementConfiguration(
+            resolution: _resolution,
+            strength: EnhancementStrength.gentle,
+            brightness: 0.02,
+            contrast: 0.05,
+            saturation: 4,
+            sharpness: 0.12,
+            noiseReduction: 0,
+            watermark: !_removeWatermark,
+          ),
+        ));
+        outputPath = result.path;
+        outputLabel = _resolutionLabel;
+      }
+      final outputFile = File(outputPath);
       final size = await outputFile.length();
       final controller = VideoPlayerController.file(outputFile);
       await controller.initialize();
@@ -130,16 +261,35 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
       await _preview?.dispose();
       setState(() {
         _preview = controller;
-        _outputPath = result.path;
+        _outputPath = outputPath;
         _outputBytes = size;
         _progress = 1;
-        _status = 'Processing complete. Review the real output before saving or sharing.';
+        _status = 'Export complete · 100%. Review the actual output before saving or sharing.';
+        _lastOutputLabel = outputLabel;
       });
     } catch (error) {
       if (mounted) setState(() => _status = error.toString().replaceFirst('ProcessingValidationException: ', ''));
     } finally {
       if (mounted) setState(() => _processingVideo = false);
     }
+  }
+
+  String _lastOutputLabel = '1080p';
+
+  Future<void> _toggleWatermarkRemoval(bool value) async {
+    if (_processingVideo || value == _removeWatermark) return;
+    if (value) {
+      final earned = await _ads.showForExport();
+      if (!mounted) return;
+      if (!earned) {
+        setState(() => _status = 'Complete the rewarded ad to unlock watermark-free on-device export.');
+        return;
+      }
+    }
+    setState(() {
+      _removeWatermark = value;
+      _status = value ? 'Watermark-free on-device export unlocked for this session.' : 'Vyntra watermark will be included on on-device exports.';
+    });
   }
 
   Future<void> _shareOutput() async {
@@ -149,7 +299,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
       return;
     }
     await Share.shareXFiles(
-      [XFile(path, mimeType: 'video/mp4', name: 'vyntra_status_${_resolutionLabel.toLowerCase()}.mp4')],
+      [XFile(path, mimeType: 'video/mp4', name: 'vyntra_status_${_lastOutputLabel.toLowerCase().replaceAll(' ', '_')}.mp4')],
       text: 'Status video prepared with Vyntra',
     );
   }
@@ -158,6 +308,12 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.primary;
     final preview = _preview;
+    final cloudOptions = <(String, String)>[
+      if (_cloudAvailable) ('1080p', '1080p · Cloud'),
+      if (_cloudAvailable) ('1440p', '1440p · Cloud'),
+      if (_cloudAvailable) ('2160p', '4K · Cloud'),
+      if (_cloudAvailable && _cloudResolution == '4320p') ('4320p', '8K · Cloud'),
+    ];
     return Scaffold(
       appBar: AppBar(title: const Text('Status HD')),
       body: SafeArea(
@@ -176,7 +332,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
                 SizedBox(height: 12),
                 Text('Ready for your status', style: TextStyle(fontSize: 23, fontWeight: FontWeight.w900)),
                 SizedBox(height: 8),
-                Text('Prepare one video at a time. Processing runs on this device, avoids cloud uploads, and keeps your original file untouched.'),
+                Text('Quick on-device exports for standard sizes, plus cloud rendering for higher resolutions when the worker is available. Cloud exports upload your selected video for processing.'),
               ]),
             ),
             const SizedBox(height: 18),
@@ -188,11 +344,10 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
             ),
             if (_source != null) ...[
               const SizedBox(height: 8),
-              Text('Source duration: ${(_source!.duration / 1000).toStringAsFixed(1)} s',
-                style: const TextStyle(color: Colors.white60, fontSize: 12)),
+              Text('Source duration: ${(_source!.duration / 1000).toStringAsFixed(1)} s', style: const TextStyle(color: Colors.white60, fontSize: 12)),
             ],
             const SizedBox(height: 20),
-            Text('Output resolution', style: Theme.of(context).textTheme.titleMedium),
+            Text('On-device resolution', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             Wrap(spacing: 8, runSpacing: 8, children: [
               for (final option in <(OutputResolution, String)>[
@@ -207,21 +362,49 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
                   onSelected: _processingVideo ? null : (_) => setState(() => _resolution = option.$1),
                 ),
             ]),
-            const SizedBox(height: 8),
-            const Text('Status HD focuses on practical social-video sizes. 4K/8K cloud rendering is not part of this workflow.',
-              style: TextStyle(color: Colors.white60, fontSize: 12)),
             const SizedBox(height: 18),
+            Row(children: [
+              Expanded(child: Text('Cloud rendering', style: Theme.of(context).textTheme.titleMedium)),
+              if (_loadingCapabilities) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+              if (!_loadingCapabilities) Text(_cloudAvailable ? 'Available' : 'Unavailable', style: TextStyle(color: _cloudAvailable ? Colors.greenAccent : Colors.orangeAccent, fontSize: 12)),
+            ]),
+            if (_cloudAvailable) ...[
+              const SizedBox(height: 8),
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                for (final option in cloudOptions)
+                  ChoiceChip(
+                    label: Text(option.$2),
+                    selected: _cloudResolution == option.$1,
+                    onSelected: _processingVideo ? null : (_) => setState(() => _cloudResolution = option.$1),
+                  ),
+              ]),
+              const SizedBox(height: 6),
+              const Text('4K/8K are rendered on the cloud worker, not on your phone. 8K appears only when the deployed worker advertises it.', style: TextStyle(color: Colors.white60, fontSize: 12)),
+            ] else
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text('Cloud export requires Supabase sign-in and a deployed, healthy FFmpeg worker. Standard on-device export remains available.', style: TextStyle(color: Colors.white60, fontSize: 12)),
+              ),
+            const SizedBox(height: 16),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _removeWatermark,
+              onChanged: _processingVideo ? null : _toggleWatermarkRemoval,
+              title: const Text('Remove Vyntra watermark'),
+              subtitle: const Text('Watch a rewarded ad to unlock watermark-free on-device export for this session.'),
+            ),
+            const SizedBox(height: 8),
             FilledButton.icon(
               onPressed: _processingVideo || _source == null ? null : _export,
-              icon: _processingVideo
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.auto_awesome_rounded),
-              label: Text(_processingVideo ? 'Processing…' : 'Watch ad & prepare video'),
+              icon: _processingVideo ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome_rounded),
+              label: Text(_processingVideo ? 'Rendering… ${(_progress * 100).round()}%' : 'Watch ad & export'),
               style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
             ),
             if (_processingVideo) ...[
               const SizedBox(height: 12),
-              LinearProgressIndicator(value: _progress > 0 ? _progress : null),
+              LinearProgressIndicator(value: _progress.clamp(0, 1)),
+              const SizedBox(height: 4),
+              Text('${(_progress * 100).round()}% complete', textAlign: TextAlign.end, style: const TextStyle(color: Colors.white70, fontSize: 12)),
             ],
             const SizedBox(height: 14),
             Text(_status, style: const TextStyle(color: Colors.white70)),
@@ -236,11 +419,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
                     IconButton.filledTonal(
                       tooltip: preview.value.isPlaying ? 'Pause preview' : 'Play preview',
                       onPressed: () {
-                        if (preview.value.isPlaying) {
-                          unawaited(preview.pause());
-                        } else {
-                          unawaited(preview.play());
-                        }
+                        if (preview.value.isPlaying) { unawaited(preview.pause()); } else { unawaited(preview.play()); }
                         setState(() {});
                       },
                       icon: Icon(preview.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
@@ -253,18 +432,13 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
               const SizedBox(height: 12),
               Container(
                 padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF151A20),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.white12),
-                ),
+                decoration: BoxDecoration(color: const Color(0xFF151A20), borderRadius: BorderRadius.circular(14), border: Border.all(color: Colors.white12)),
                 child: Row(children: [
                   const Icon(Icons.check_circle_outline_rounded, color: Colors.greenAccent),
                   const SizedBox(width: 10),
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     const Text('Processed MP4', style: TextStyle(fontWeight: FontWeight.w800)),
-                    Text('$_resolutionLabel · ${_formatBytes(_outputBytes!)}',
-                      style: const TextStyle(color: Colors.white60, fontSize: 12)),
+                    Text('$_lastOutputLabel · ${_formatBytes(_outputBytes!)}', style: const TextStyle(color: Colors.white60, fontSize: 12)),
                   ])),
                 ]),
               ),
@@ -272,8 +446,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
               FilledButton.icon(onPressed: _shareOutput, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save or share video')),
             ],
             const SizedBox(height: 16),
-            const Text('A rewarded ad is required before processing. Output size depends on the source, duration and selected resolution; the app reports the actual file size after encoding.',
-              style: TextStyle(color: Colors.white54, fontSize: 12)),
+            const Text('Rewarded ads gate exports and the watermark-removal unlock. Actual output size is measured after rendering.', style: TextStyle(color: Colors.white54, fontSize: 12)),
           ],
         ),
       ),
