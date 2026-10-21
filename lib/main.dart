@@ -4,12 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'services/supabase_config.dart';
 
 import 'project_library_screen.dart';
-
-const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
-const supabasePublishableKey = String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY');
-bool vyntraSupabaseConfigured = false;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
