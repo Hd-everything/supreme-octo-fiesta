@@ -860,4 +860,3 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
     ),
   );
 }
-}
