@@ -60,7 +60,7 @@ class _VyntraStartupState extends State<VyntraStartup> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.movie_edit_outlined, size: 48),
+                      const Icon(Icons.video_library_outlined, size: 48),
                       const SizedBox(height: 16),
                       const Text('Vyntra could not load project storage.'),
                       const SizedBox(height: 12),
@@ -85,7 +85,7 @@ class _VyntraStartupState extends State<VyntraStartup> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.movie_edit_outlined, size: 54, color: Color(0xFF62E6C5)),
+                      Icon(Icons.video_library_outlined, size: 54, color: Color(0xFF62E6C5)),
                       SizedBox(height: 14),
                       Text('VYNTRA', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 3)),
                       SizedBox(height: 6),
