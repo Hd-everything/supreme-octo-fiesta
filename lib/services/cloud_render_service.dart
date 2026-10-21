@@ -32,6 +32,8 @@ class CloudRenderService {
 
   bool get isSignedIn => client.auth.currentUser != null;
 
+  Future<Map<String, dynamic>> capabilities() => _invoke({'action': 'capabilities'});
+
   Future<void> signIn(String email, String password) async {
     final result = await client.auth.signInWithPassword(email: email.trim(), password: password);
     if (result.user == null) throw const CloudRenderException('Sign-in did not return a user.');
@@ -52,6 +54,12 @@ class CloudRenderService {
     required void Function(CloudRenderProgress) onProgress,
   }) async {
     if (!isSignedIn) throw const CloudRenderException('Sign in to Supabase before starting a cloud export.');
+    final available = await capabilities();
+    if (available['workerReady'] != true) {
+      throw const CloudRenderException('Cloud rendering is not available yet: the FFmpeg worker has not been deployed and verified.');
+    }
+    final resolutions = (available['resolutions'] as List? ?? const []).cast<String>();
+    if (!resolutions.contains(resolution)) throw CloudRenderException('The deployed worker does not support $resolution export.');
     final objectPaths = <String, String>{};
     final localPaths = <String>{};
     for (final clip in project.clips) { localPaths.add(clip.path); }
