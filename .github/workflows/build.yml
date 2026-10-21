@@ -70,16 +70,16 @@ jobs:
               text, n1 = re.subn(r"compileSdk\s*=\s*(?:flutter\.compileSdkVersion|\d+)", "compileSdk = 36", text, count=1)
               text, n2 = re.subn(r'ndkVersion\s*=\s*(?:flutter\.ndkVersion|"[^"]+"|\d+(?:\.\d+)+)', 'ndkVersion = "28.2.13676358"', text, count=1)
               deps = """
-              implementation("androidx.media3:media3-transformer:1.5.1")
-              implementation("androidx.media3:media3-effect:1.5.1")
+              implementation("androidx.media3:media3-transformer:1.11.1")
+              implementation("androidx.media3:media3-effect:1.11.1")
               implementation("com.google.ai.edge.litert:litert-api:1.4.0")
               """
           else:
               text, n1 = re.subn(r"compileSdkVersion\s+(?:flutter\.compileSdkVersion|\d+)", "compileSdkVersion 36", text, count=1)
               text, n2 = re.subn(r'ndkVersion\s+(?:flutter\.ndkVersion|"[^"]+"|\d+(?:\.\d+)+)', 'ndkVersion "28.2.13676358"', text, count=1)
               deps = """
-              implementation "androidx.media3:media3-transformer:1.5.1"
-              implementation "androidx.media3:media3-effect:1.5.1"
+              implementation "androidx.media3:media3-transformer:1.11.1"
+              implementation "androidx.media3:media3-effect:1.11.1"
               implementation "com.google.ai.edge.litert:litert-api:1.4.0"
               """
           if not n1:
