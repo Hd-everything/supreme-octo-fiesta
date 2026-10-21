@@ -116,7 +116,7 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(color: accent.withValues(alpha: .25)),
                           ),
-                          child: Icon(Icons.movie_edit_outlined, color: accent, size: 24),
+                          child: Icon(Icons.movie_creation_outlined, color: accent, size: 24),
                         ),
                         const SizedBox(width: 12),
                         const Expanded(
