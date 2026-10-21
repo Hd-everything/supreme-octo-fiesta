@@ -29,6 +29,10 @@ jobs:
         run: python3 -m unittest discover -s . -p 'test_*.py'
       - name: Build cloud renderer container
         run: docker build --tag vyntra-cloud-renderer cloud-renderer
+      - name: Smoke-test real 4K encode and decode in renderer image
+        run: >-
+          docker run --rm --entrypoint sh vyntra-cloud-renderer -c
+          'ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=3840x2160:r=24:d=1 -c:v libx264 -preset ultrafast -pix_fmt yuv420p /tmp/vyntra-4k.mp4 && test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 /tmp/vyntra-4k.mp4)" = "3840x2160" && ffmpeg -v error -i /tmp/vyntra-4k.mp4 -f null -'
       - name: Restore packages
         run: flutter pub get
       - name: Format check
