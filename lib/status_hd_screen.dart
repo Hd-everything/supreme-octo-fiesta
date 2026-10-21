@@ -31,15 +31,20 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
   String? _outputPath;
   int? _outputBytes;
   VideoPlayerController? _preview;
+  StreamSubscription<int>? _progressSubscription;
 
   @override
   void initState() {
     super.initState();
     unawaited(_ads.preload());
+    _progressSubscription = _processing.progress.listen((value) {
+      if (mounted && _processingVideo) setState(() => _progress = value / 100);
+    });
   }
 
   @override
   void dispose() {
+    _progressSubscription?.cancel();
     _preview?.dispose();
     unawaited(_processing.closeNeuralRuntime());
     super.dispose();
@@ -89,7 +94,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
       _outputBytes = null;
     });
     try {
-      final earned = await _ads.showFor1080p();
+      final earned = await _ads.showForExport();
       if (!earned) {
         if (mounted) setState(() => _status = 'The rewarded ad was not completed or is unavailable. Try again later.');
         return;
