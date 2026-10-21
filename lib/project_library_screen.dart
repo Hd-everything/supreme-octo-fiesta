@@ -327,4 +327,3 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
     );
   }
 }
-}
