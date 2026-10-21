@@ -64,45 +64,55 @@ class _VyntraStartupState extends State<VyntraStartup> {
               debugShowCheckedModeBanner: false,
               theme: _vyntraTheme(),
               home: Scaffold(
-                body: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.video_library_outlined, size: 48),
-                      const SizedBox(height: 16),
-                      const Text('Vyntra could not load project storage.'),
-                      const SizedBox(height: 8),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 28),
-                        child: SelectableText(
-                          snapshot.error.toString(),
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white54, fontSize: 12),
-                        ),
+                body: SafeArea(
+                  child: Center(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.video_library_outlined, size: 48),
+                          const SizedBox(height: 16),
+                          const Text('Vyntra could not load project storage.'),
+                          const SizedBox(height: 8),
+                          ExpansionTile(
+                            title: const Text('Technical details', textAlign: TextAlign.center),
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                                child: SelectableText(
+                                  snapshot.error.toString(),
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton(
+                            onPressed: () => setState(
+                              () => _preferences = SharedPreferences.getInstance(),
+                            ),
+                            child: const Text('Try again'),
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: () => setState(
+                              () => _preferences = _temporaryPreferences(),
+                            ),
+                            child: const Text('Continue with temporary storage'),
+                          ),
+                          const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 28),
+                            child: Text(
+                              'Temporary mode keeps saved files untouched, but new projects and settings from this session will not persist after closing the app.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.white38, fontSize: 11),
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
-                      FilledButton(
-                        onPressed: () => setState(
-                          () => _preferences = SharedPreferences.getInstance(),
-                        ),
-                        child: const Text('Try again'),
-                      ),
-                      const SizedBox(height: 8),
-                      TextButton(
-                        onPressed: () => setState(
-                          () => _preferences = _temporaryPreferences(),
-                        ),
-                        child: const Text('Continue with temporary storage'),
-                      ),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 28),
-                        child: Text(
-                          'Temporary mode keeps saved files untouched, but new projects and settings from this session will not persist after closing the app.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white38, fontSize: 11),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),

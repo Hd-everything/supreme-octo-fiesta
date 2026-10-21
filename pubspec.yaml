@@ -16,6 +16,10 @@ dependencies:
   media_kit_libs_video: ^1.0.6
   share_plus: ^10.1.4
   shared_preferences: ^2.3.3
+  # 2.5.0's JNI-backed Android implementation crashes in optimized release APKs
+  # because R8 renames coroutine types used by JNI. Keep the compatible backend
+  # until a release with the upstream consumer rules is available.
+  shared_preferences_android: 2.4.28
   video_player: ^2.9.2
   crypto: ^3.0.7
   path: ^1.9.1
