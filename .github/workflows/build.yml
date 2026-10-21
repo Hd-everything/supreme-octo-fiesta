@@ -61,9 +61,9 @@ jobs:
                   if "com.android.application" in line and "version" in line:
                       prefix = line[:line.index("version")]
                       if "id '" in line:
-                          lines[i] = prefix + "version '8.9.1' apply false"
+                          lines[i] = prefix + "version '8.11.1' apply false"
                       else:
-                          lines[i] = prefix + 'version "8.9.1" apply false'
+                          lines[i] = prefix + 'version "8.11.1" apply false'
               text = "\n".join(lines) + "\n"
               settings.write_text(text)
 
