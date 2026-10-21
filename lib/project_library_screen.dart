@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'media_manager_screen.dart';
 import 'models/edit_project.dart';
 import 'project_editor_screen.dart';
+import 'status_hd_screen.dart';
 import 'services/edit_project_store.dart';
 
 class ProjectLibraryScreen extends StatefulWidget {
@@ -149,6 +150,23 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                         icon: const Icon(Icons.add_rounded, size: 22),
                         label: const Text('Create new project', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
                         style: FilledButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 54,
+                      child: OutlinedButton.icon(
+                        onPressed: () => Navigator.of(context).push<void>(
+                          MaterialPageRoute(builder: (_) => StatusHdScreen(preferences: widget.preferences)),
+                        ),
+                        icon: const Icon(Icons.high_quality_rounded),
+                        label: const Text('Status HD · Optimize & export', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: accent,
+                          side: BorderSide(color: accent.withValues(alpha: .45)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 28),
