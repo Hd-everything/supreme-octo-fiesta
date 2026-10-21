@@ -851,7 +851,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                     title: Text(overlay.text, maxLines: 1, overflow: TextOverflow.ellipsis),
                     subtitle: Text('${_time(overlay.startMs)} – ${_time(overlay.endMs)} · ${overlay.fontSize.round()} px'),
                     onTap: () async { Navigator.pop(sheetContext); await _editTextOverlay(overlay); },
-                    trailing: Wrap(mainAxisSize: MainAxisSize.min, children: [
+                    trailing: Wrap(children: [
                       IconButton(tooltip: 'Edit text layer', onPressed: () async { Navigator.pop(sheetContext); await _editTextOverlay(overlay); }, icon: const Icon(Icons.tune_rounded)),
                       IconButton(tooltip: 'Remove text layer', onPressed: () { _changeProject(_project.copyWith(overlays: _project.overlays.where((item) => item.id != overlay.id).toList())); updateSheet(() {}); }, icon: const Icon(Icons.close_rounded)),
                     ]),
