@@ -154,7 +154,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
     final accent = Theme.of(context).colorScheme.primary;
     final preview = _preview;
     return Scaffold(
-      appBar: AppBar(title: const Text('Status HD'), subtitle: const Text('Quick, on-device export')),
+      appBar: AppBar(title: const Text('Status HD')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
@@ -230,7 +230,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
                     VideoPlayer(preview),
                     IconButton.filledTonal(
                       tooltip: preview.value.isPlaying ? 'Pause preview' : 'Play preview',
-                      onPressed: () => setState(() => preview.value.isPlaying ? preview.pause() : preview.play()),
+                      onPressed: () {\n                        if (preview.value.isPlaying) {\n                          unawaited(preview.pause());\n                        } else {\n                          unawaited(preview.play());\n                        }\n                        setState(() {});\n                      },
                       icon: Icon(preview.value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
                     ),
                   ]),
