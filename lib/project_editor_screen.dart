@@ -11,6 +11,7 @@ import 'package:video_player/video_player.dart';
 import 'media_manager_screen.dart';
 import 'models/edit_project.dart';
 import 'services/edit_project_store.dart';
+import 'services/ads/rewarded_ad_service.dart';
 import 'services/media_processing/video_processing_service.dart';
 
 class ProjectEditorScreen extends StatefulWidget {
@@ -26,6 +27,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   static const _mediaChannel = MethodChannel('com.ptip.statushd/media');
   late EditProject _project = widget.project;
   late final VideoProcessingService _processing = VideoProcessingService();
+  final RewardedAdService _rewardedAds = RewardedAdService();
   final List<List<EditClip>> _undo = [];
   final List<List<EditClip>> _redo = [];
   final Map<String, Future<Uint8List?>> _thumbnails = {};
@@ -34,6 +36,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   Timer? _saveTimer;
   int _selectedIndex = 0;
   bool _exporting = false;
+  bool _watchingRewardedAd = false;
   bool _previewingExport = false;
   double _progress = 0;
   String? _exportPath;
@@ -46,6 +49,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_rewardedAds.preload());
     _progressSubscription = _processing.progress.listen((value) { if (mounted && _exporting) setState(() => _progress = value / 100); });
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadClipPreview(0));
   }
@@ -197,11 +201,24 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
 
   Future<void> _export() async {
     if (_exporting || _project.clips.isEmpty) return;
-    setState(() { _exporting = true; _progress = 0; });
-    _message('Rendering project…');
+    const creditKey = 'vyntra_project_export_credits_v1';
+    var credits = widget.store.preferences.getInt(creditKey) ?? 0;
+    setState(() { _exporting = true; _watchingRewardedAd = credits <= 0; _progress = 0; });
     try {
+      if (credits <= 0) {
+        _message('Watch one rewarded ad to unlock one project export.');
+        if (!await _rewardedAds.showFor1080p()) {
+          if (mounted) _message('The ad was unavailable or not completed. Your project is unchanged.');
+          return;
+        }
+        credits = 1;
+        await widget.store.preferences.setInt(creditKey, credits);
+      }
+      if (mounted) setState(() => _watchingRewardedAd = false);
+      _message('Rendering project…');
       final path = '${Directory.systemTemp.path}/vyntra_${_project.id}_${DateTime.now().microsecondsSinceEpoch}.mp4';
       final resultPath = await _processing.exportProject(clips: _project.clips, outputPath: path);
+      await widget.store.preferences.setInt(creditKey, credits - 1);
       try { await _recordExport(resultPath); } catch (_) {}
       final preview = VideoPlayerController.file(File(resultPath));
       try {
@@ -217,7 +234,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
     } catch (error) {
       if (mounted) _message('Export failed: ${error.toString().replaceFirst('Exception: ', '')}');
     } finally {
-      if (mounted) setState(() => _exporting = false);
+      if (mounted) setState(() { _exporting = false; _watchingRewardedAd = false; });
     }
   }
 
@@ -328,12 +345,14 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
             Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _splitAtPlayhead, icon: const Icon(Icons.content_cut_rounded), label: const Text('Split at playhead'))), const SizedBox(width: 9), Expanded(child: OutlinedButton.icon(onPressed: _addClips, icon: const Icon(Icons.add_rounded), label: const Text('Add clips')))]),
             const SizedBox(height: 6),
             const Text('Drag clips to reorder. Select a clip to preview and trim. Export joins the trimmed clips with their original audio.', style: TextStyle(color: Colors.white54, fontSize: 11, height: 1.4)),
+            const SizedBox(height: 5),
+            const Text('One rewarded ad unlocks one watermark-free project export.', style: TextStyle(color: Colors.white38, fontSize: 10)),
             if (_exportPath != null) ...[
               const SizedBox(height: 10),
               Row(children: [Expanded(child: OutlinedButton.icon(onPressed: _saveExport, icon: const Icon(Icons.save_alt_rounded), label: const Text('Save export'))), const SizedBox(width: 9), Expanded(child: FilledButton.icon(onPressed: _shareExport, icon: const Icon(Icons.share_rounded), label: const Text('Share export')))]),
             ],
           ],
-          if (_exporting) ...[const SizedBox(height: 14), LinearProgressIndicator(value: _progress > 0 ? _progress : null), const SizedBox(height: 7), Row(children: [Expanded(child: Text(_progress > 0 ? 'Rendering project · ${(_progress * 100).round()}%' : 'Rendering project…', style: TextStyle(color: accent, fontSize: 12))), TextButton(onPressed: () => _processing.cancel(), child: const Text('Cancel'))])],
+          if (_exporting) ...[const SizedBox(height: 14), LinearProgressIndicator(value: !_watchingRewardedAd && _progress > 0 ? _progress : null), const SizedBox(height: 7), Row(children: [Expanded(child: Text(_watchingRewardedAd ? 'Unlocking one video export…' : _progress > 0 ? 'Rendering project · ${(_progress * 100).round()}%' : 'Rendering project…', style: TextStyle(color: accent, fontSize: 12))), if (!_watchingRewardedAd) TextButton(onPressed: () => _processing.cancel(), child: const Text('Cancel'))])],
         ])),
       ])),
     );
