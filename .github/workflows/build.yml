@@ -11,13 +11,13 @@ permissions:
 
 concurrency:
   group: statushd-release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   android:
     name: Build signed Android APK
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -135,7 +135,7 @@ jobs:
           manifest.write_text(text)
           PY
 
-          printf '\nkotlin.jvm.target.validation.mode=warning\norg.gradle.vfs.watch=false\norg.gradle.daemon=false\n' >> /tmp/statushd/gradle.properties
+          printf '\nkotlin.jvm.target.validation.mode=warning\norg.gradle.vfs.watch=false\norg.gradle.daemon=false\norg.gradle.workers.max=2\n' >> /tmp/statushd/gradle.properties
 
       - name: Copy Vyntra sources
         shell: bash
