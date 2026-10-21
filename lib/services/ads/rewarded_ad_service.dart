@@ -38,7 +38,8 @@ class RewardedAdService {
     });
   }
 
-  Future<bool> showFor1080p() async {
+  /// Shows the rewarded placement before an export at any supported resolution.
+  Future<bool> showForExport() async {
     // A tap can happen before the background preload finishes. Wait briefly
     // for that request instead of turning an ad load race into a lost reward.
     final ad = _ad ?? await _loadAd().timeout(const Duration(seconds: 20), onTimeout: () => null);
@@ -74,4 +75,6 @@ class RewardedAdService {
     }
     return reward.future;
   }
+  /// Backwards-compatible alias used by older editor export controls.
+  Future<bool> showFor1080p() => showForExport();
 }
