@@ -199,6 +199,16 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
           createdAt: now,
           updatedAt: now,
           aspectRatio: '9:16',
+          overlays: _removeWatermark ? const [] : [EditTextOverlay(
+            id: '${id}_watermark',
+            text: 'Vyntra',
+            startMs: 0,
+            endMs: metadata.duration.inMilliseconds,
+            color: 0xBFFFFFFF,
+            fontSize: 22,
+            x: .82,
+            y: .84,
+          )],
           clips: [EditClip(
             id: '${id}_clip',
             path: source.path,
