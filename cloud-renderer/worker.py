@@ -2,7 +2,7 @@
 """Vyntra cloud render worker. Runs outside Supabase Edge Functions."""
 from __future__ import annotations
 
-import json, os, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
+import json, os, shutil, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
 import requests
 from pathlib import Path
 
@@ -74,7 +74,14 @@ def render(job, work: Path):
     resolution = job["resolution"]
     edge = {"720p": 720, "1080p": 1080, "1440p": 1440, "2160p": 2160, "4320p": 4320}.get(resolution)
     if edge is None: raise ValueError("unsupported_resolution")
-    if resolution == "4320p" and not ENABLE_8K: raise ValueError("8k_not_enabled_on_worker")
+    if resolution == "4320p":
+        if not ENABLE_8K: raise ValueError("8k_not_enabled_on_worker")
+        try:
+            total_ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        except (ValueError, OSError, AttributeError):
+            total_ram = 0
+        if total_ram < 8 * 1024**3 or shutil.disk_usage(tempfile.gettempdir()).free < 10 * 1024**3:
+            raise ValueError("8k_worker_resources_insufficient")
     codec = job.get("codec", "h264")
     encoders = subprocess.check_output(["ffmpeg", "-hide_banner", "-encoders"], stderr=subprocess.STDOUT, text=True)
     if codec == "h265" and "libx265" not in encoders: raise ValueError("encoder_unavailable:h265")
@@ -99,6 +106,7 @@ def render(job, work: Path):
         if end <= start or end - start > MAX_DURATION: raise ValueError("invalid_trim_range")
         input_args += ["-ss", str(start), "-t", str(end-start), "-i", str(path)]
         local.append(path); clip_lengths.append(end-start); probe_info.append((v, any(s.get("codec_type") == "audio" for s in meta.get("streams", []))))
+    if sum(clip_lengths) > MAX_DURATION: raise ValueError("project_duration_limit")
     music_path = None
     music = plan.get("musicPath")
     if music:
@@ -107,16 +115,24 @@ def render(job, work: Path):
         storage_download(music, music_path)
         input_args += ["-i", str(music_path)]
 
-    width, height = edge * 16 // 9, edge
-    # User-facing resolution is the long edge: preserve portrait/landscape orientation.
     first = probe_info[0][0]
-    if int(first.get("width", 16)) < int(first.get("height", 9)): width, height = edge * 9 // 16, edge
     ratio = plan.get("aspectRatio", "Original")
-    ratios = {"9:16": (9,16), "16:9": (16,9), "1:1": (1,1), "4:5": (4,5)}
-    if ratio in ratios:
-        rw, rh = ratios[ratio]
-        if width / height > rw / rh: width = int(height * rw / rh)
-        else: height = int(width * rh / rw)
+    ratios = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0, "4:5": 4 / 5}
+    if ratio == "Original":
+        source_width = int(first.get("width", 16))
+        source_height = int(first.get("height", 9))
+        if int(clips[0].get("rotation", 0)) % 180 == 90:
+            source_width, source_height = source_height, source_width
+        target_ratio = source_width / max(1, source_height)
+    elif ratio in ratios:
+        target_ratio = ratios[ratio]
+    else:
+        raise ValueError("invalid_aspect_ratio")
+    # Resolution labels use standard short-edge dimensions. Portrait 4K is 2160x3840.
+    if target_ratio >= 1:
+        width, height = round(edge * target_ratio), edge
+    else:
+        width, height = edge, round(edge / target_ratio)
     width -= width % 2; height -= height % 2
     if width * height > 7680 * 4320: raise ValueError("output_dimensions_too_large")
 
@@ -218,7 +234,11 @@ def render(job, work: Path):
         raise RuntimeError("output_verification_failed:dimensions")
     # Full decode verification, not just successful container creation.
     subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-f", "null", "-"], check=True, timeout=MAX_DURATION*2)
-    return out, {"width": width, "height": height, "videoCodec": video.get("codec_name"), "durationSeconds": float(meta.get("format", {}).get("duration", 0)), "bytes": out.stat().st_size}
+    output_duration = float(meta.get("format", {}).get("duration", 0))
+    expected_duration = sum(clip_lengths)
+    if output_duration <= 0 or abs(output_duration - expected_duration) > max(1.0, len(clips) * 0.15):
+        raise RuntimeError("output_verification_failed:duration")
+    return out, {"width": width, "height": height, "videoCodec": video.get("codec_name"), "durationSeconds": output_duration, "bytes": out.stat().st_size}
 
 def main():
     print("Vyntra worker ready", WORKER_ID, flush=True)
