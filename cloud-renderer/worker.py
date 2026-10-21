@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json, os, shutil, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
-import requests
 from pathlib import Path
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
@@ -45,6 +44,7 @@ def storage_download(object_path: str, destination: Path):
             out.write(chunk)
 
 def storage_upload(source: Path, object_path: str):
+    import requests
     # Stream the output from disk; do not load large rendered files into memory.
     url = SUPABASE_URL + "/storage/v1/object/" + BUCKET + "/" + urllib.parse.quote(object_path, safe="/")
     with source.open("rb") as stream:
