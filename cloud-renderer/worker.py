@@ -152,7 +152,19 @@ def render(job, work: Path):
         filters.append(f"{audio_label}[music]amix=inputs=2:duration=first:dropout_transition=2[aout]")
         audio_label = "[aout]"
 
-    # Timed text is supported; unsupported fonts/effects fail instead of disappearing silently.
+    # Add user-scoped still-image overlays as looped inputs. The base video controls output duration.
+    image_inputs = []
+    for image_index, overlay in enumerate(plan.get("imageOverlays", [])):
+        key = overlay.get("path", "")
+        if not key.startswith(job["owner_id"] + "/"): raise ValueError("media_not_owned")
+        suffix = Path(key).suffix.lower()
+        if suffix not in (".png", ".jpg", ".jpeg", ".webp"): raise ValueError("unsupported_image_format")
+        image_path = work / f"overlay_{image_index}{suffix}"
+        storage_download(key, image_path)
+        input_args += ["-loop", "1", "-i", str(image_path)]
+        image_inputs.append((len(clips) + (1 if music_path else 0) + image_index, overlay))
+
+    # Timed text and image overlays are supported; unknown effects fail explicitly.
     for i, overlay in enumerate(plan.get("overlays", [])):
         text = str(overlay.get("text", ""))
         if not text or len(text) > 160: raise ValueError("invalid_text_overlay")
@@ -167,8 +179,16 @@ def render(job, work: Path):
         filters.append(f"{video_label}drawtext=text='{escaped}':fontsize={font_size}:fontcolor=0x{color:06X}:x=(w-text_w)/2+({x})*w/2:y=(h-text_h)/2+({y})*h/2:enable='between(t,{start},{end})'{next_label}")
         video_label = next_label
 
-    if plan.get("imageOverlays"):
-        raise ValueError("unsupported_effect:image_overlays (uploadable image overlay rendering is not yet enabled)")
+    for i, (image_index, overlay) in enumerate(image_inputs):
+        start = safe_number(overlay.get("startMs", 0), 0, MAX_DURATION * 1000, "image_start") / 1000
+        end = safe_number(overlay.get("endMs", 1000), start * 1000 + 1, MAX_DURATION * 1000, "image_end") / 1000
+        scale = safe_number(overlay.get("scale", .28), .05, 1, "image_scale")
+        x = safe_number(overlay.get("x", .65), -1, 1, "image_x")
+        y = safe_number(overlay.get("y", .55), -1, 1, "image_y")
+        next_label = f"[vi{i}]"
+        filters.append(f"[{image_index}:v]scale={max(2, int(width * scale))}:-1,format=rgba[img{i}]")
+        filters.append(f"{video_label}[img{i}]overlay=x=(W-w)/2+({x})*W/2:y=(H-h)/2+({y})*H/2:enable='between(t,{start},{end})':eof_action=pass{next_label}")
+        video_label = next_label
     out = work / "render.mp4"
     cmd = input_args + ["-filter_complex", ";".join(filters), "-map", video_label, "-map", audio_label,
         "-c:v", "libx264" if codec == "h264" else "libx265", "-preset", "veryfast",
