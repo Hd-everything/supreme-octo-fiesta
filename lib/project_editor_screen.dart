@@ -409,7 +409,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
       '16:9' => 16 / 9,
       '1:1' => 1.0,
       '4:5' => 4 / 5,
-      _ => playerReady ? (_selectedClip.rotation % 180 == 0 ? player!.value.aspectRatio : 1 / player.value.aspectRatio) : 16 / 9,
+      _ => playerReady ? (_selectedClip.rotation % 180 == 0 ? player!.value.aspectRatio : 1 / player!.value.aspectRatio) : 16 / 9,
     };
     final selectedGlobalStart = _project.clips.take(_selectedIndex).fold<int>(0, (sum, item) => sum + item.lengthMs);
     final clipPosition = playerReady && !_previewingExport ? (player!.value.position.inMilliseconds - clip.startMs).clamp(0, clip.lengthMs) : 0;
@@ -491,7 +491,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
               for (final overlay in _project.imageOverlays) Card(child: ListTile(dense: true, onTap: () => _editImageOverlay(overlay), leading: const Icon(Icons.image_outlined), title: Text(overlay.name, maxLines: 1, overflow: TextOverflow.ellipsis), subtitle: Text('Tap to position · ${_time(overlay.startMs)} – ${_time(overlay.endMs)}'), trailing: IconButton(tooltip: 'Remove image overlay', onPressed: () => _changeProject(_project.copyWith(imageOverlays: _project.imageOverlays.where((item) => item.id != overlay.id).toList())), icon: const Icon(Icons.close_rounded))))
             ],
             ExpansionTile(title: const Text('Clip sound & picture adjustments', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)), tilePadding: EdgeInsets.zero, children: [
-              _adjustmentSlider('Original audio', clip.volume, 0, 1, (value) => _updateSelectedClip(clip.copyWith(volume: value), recordUndo: false), label: '${(clip.volume * 100).round()}%'),
+              _adjustmentSlider('Original audio', clip.volume, 0, 1, (value) => _updateSelectedClip(clip.copyWith(volume: value), recordUndo: false), labelText: '${(clip.volume * 100).round()}%'),
               _adjustmentSlider('Brightness', clip.brightness, -.25, .25, (value) => _updateSelectedClip(clip.copyWith(brightness: value), recordUndo: false)),
               _adjustmentSlider('Contrast', clip.contrast, -.3, .3, (value) => _updateSelectedClip(clip.copyWith(contrast: value), recordUndo: false)),
               _adjustmentSlider('Saturation', clip.saturation, -20, 30, (value) => _updateSelectedClip(clip.copyWith(saturation: value), recordUndo: false)),
