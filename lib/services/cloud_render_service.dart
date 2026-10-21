@@ -87,7 +87,7 @@ class CloudRenderService {
       try {
         await client.storage.from(bucket).uploadToSignedUrl(
           objectPath, token, file,
-          fileOptions: FileOptions(contentType: mime, upsert: false),
+          contentType: mime,
         );
       } catch (_) {
         throw CloudRenderException('Upload failed for ${p.basename(localPath)}. Check your connection and retry.');
