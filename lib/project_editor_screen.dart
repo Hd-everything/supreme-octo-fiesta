@@ -376,30 +376,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
         SizedBox(width: 38, child: Text(labelText ?? value.toStringAsFixed(2), textAlign: TextAlign.end, style: const TextStyle(fontSize: 9, color: Colors.white54))),
       ]);
 
-  Widget _timelineCard(EditClip clip, int index, Color accent) {
-    final duration = clip.lengthMs;
-    final image = _thumbnail(clip);
-    final cardWidth = (duration / 1000 * 20).clamp(124, 300).toDouble();
-    return SizedBox(width: cardWidth, child: Material(
-      key: ValueKey(clip.id),
-      color: index == _selectedIndex ? accent.withValues(alpha: .16) : const Color(0xFF191D24),
-      borderRadius: BorderRadius.circular(14),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(onTap: () => _loadClipPreview(index), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Expanded(child: FutureBuilder<Uint8List?>(future: image, builder: (context, snapshot) => snapshot.data == null
-            ? const Center(child: Icon(Icons.movie_outlined, color: Colors.white54))
-            : Image.memory(snapshot.data!, fit: BoxFit.cover, gaplessPlayback: true))),
-        Padding(padding: const EdgeInsets.fromLTRB(9, 6, 5, 4), child: Row(children: [
-          Expanded(child: Text(clip.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700))),
-          Text(_time(duration), style: TextStyle(fontSize: 9, color: accent)),
-          ReorderableDragStartListener(index: index, child: const Padding(padding: EdgeInsets.only(left: 5), child: Icon(Icons.drag_indicator_rounded, size: 15, color: Colors.white54))),
-        ])),
-      ]))),
-    );
-  }
-
   Future<void> _openEditorTool(String tool) async {
-    final accent = Theme.of(context).colorScheme.primary;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -602,7 +579,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(_project.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
-              const Text('VYNTRA STUDIO', style: TextStyle(fontSize: 9, letterSpacing: 1.6, color: Colors.white45)),
+              const Text('VYNTRA STUDIO', style: TextStyle(fontSize: 9, letterSpacing: 1.6, color: Colors.white54)),
             ],
           ),
         ),
