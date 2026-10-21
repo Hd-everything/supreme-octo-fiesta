@@ -154,7 +154,7 @@ class _ProjectLibraryScreenState extends State<ProjectLibraryScreen> {
                     const SizedBox(height: 28),
                     Row(
                       children: [
-                        const Expanded(child: Text('Your projects', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w850, letterSpacing: -.4))),
+                        const Expanded(child: Text('Your projects', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, letterSpacing: -.4))),
                         Text('${_projects.length} total', style: const TextStyle(color: Colors.white54, fontSize: 12)),
                       ],
                     ),
