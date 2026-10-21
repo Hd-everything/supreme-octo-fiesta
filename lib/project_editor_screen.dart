@@ -8,10 +8,13 @@ import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'media_manager_screen.dart';
 import 'models/edit_project.dart';
 import 'services/edit_project_store.dart';
+import 'services/cloud_render_service.dart';
+import 'services/supabase_config.dart';
 import 'services/ads/rewarded_ad_service.dart';
 import 'services/media_processing/video_processing_service.dart';
 
@@ -40,6 +43,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
   bool _watchingRewardedAd = false;
   bool _previewingExport = false;
   double _progress = 0;
+  String _exportStatus = 'Rendering project…';
   double _timelineZoom = 1.0;
   String? _exportPath;
   StreamSubscription<int>? _progressSubscription;
@@ -395,6 +399,141 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
 
   Future<void> _export() async {
     if (_exporting || _project.clips.isEmpty) return;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Export project'),
+        content: const Text('Choose where to render your edited video. Cloud export uploads source media to your private Vyntra workspace and renders on a remote FFmpeg worker.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          OutlinedButton(onPressed: () => Navigator.pop(dialogContext, 'local'), child: const Text('Local export')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, 'cloud'), child: const Text('Cloud export')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'local') return _exportLocal();
+    if (choice == 'cloud') return _exportCloud();
+  }
+
+  Future<bool> _ensureCloudSignedIn(CloudRenderService service) async {
+    if (service.isSignedIn) return true;
+    final email = TextEditingController();
+    final password = TextEditingController();
+    var createAccount = false;
+    var errorText = '';
+    final signedIn = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, updateDialog) => AlertDialog(
+          title: Text(createAccount ? 'Create Vyntra cloud account' : 'Sign in to Vyntra cloud'),
+          content: SizedBox(
+            width: 380,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(controller: email, keyboardType: TextInputType.emailAddress, autofillHints: const [AutofillHints.email], decoration: const InputDecoration(labelText: 'Email')),
+              TextField(controller: password, obscureText: true, autofillHints: const [AutofillHints.password], decoration: const InputDecoration(labelText: 'Password')),
+              if (errorText.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 10), child: Text(errorText, style: const TextStyle(color: Colors.orangeAccent))),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => updateDialog(() { createAccount = !createAccount; errorText = ''; }), child: Text(createAccount ? 'Have an account? Sign in' : 'Create account')),
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                try {
+                  if (createAccount) {
+                    await service.signUp(email.text, password.text);
+                  } else {
+                    await service.signIn(email.text, password.text);
+                  }
+                  if (service.isSignedIn && dialogContext.mounted) Navigator.pop(dialogContext, true);
+                } catch (error) {
+                  updateDialog(() => errorText = error.toString().replaceFirst('Exception: ', ''));
+                }
+              },
+              child: Text(createAccount ? 'Create account' : 'Sign in'),
+            ),
+          ],
+        ),
+      ),
+    );
+    email.dispose();
+    password.dispose();
+    return signedIn == true && service.isSignedIn;
+  }
+
+  Future<void> _exportCloud() async {
+    if (!vyntraSupabaseConfigured) {
+      _message('Cloud export needs SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY at build time. Local export remains available.');
+      return;
+    }
+    final service = CloudRenderService(Supabase.instance.client, preferences: widget.store.preferences);
+    try {
+      if (!await _ensureCloudSignedIn(service)) return;
+      final capabilities = await service.capabilities();
+      if (capabilities['workerReady'] != true) {
+        _message('Cloud export is not ready yet: the separate FFmpeg worker has not been deployed and verified.');
+        return;
+      }
+      final resolutions = (capabilities['resolutions'] as List? ?? const []).cast<String>();
+      if (resolutions.isEmpty) {
+        _message('The deployed worker has not advertised any verified output resolutions.');
+        return;
+      }
+      var selectedResolution = resolutions.contains('2160p') ? '2160p' : resolutions.first;
+      final resolution = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, updateDialog) => AlertDialog(
+            title: const Text('Cloud export resolution'),
+            content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              DropdownButtonFormField<String>(
+                value: selectedResolution,
+                decoration: const InputDecoration(labelText: 'Output resolution'),
+                items: resolutions.map((value) => DropdownMenuItem(value: value, child: Text(value == '2160p' ? '4K · 3840 × 2160' : value == '4320p' ? '8K · 7680 × 4320' : value))).toList(),
+                onChanged: (value) => updateDialog(() => selectedResolution = value ?? selectedResolution),
+              ),
+              const SizedBox(height: 12),
+              const Text('The final file is rendered on the cloud worker. Upload and download data charges may apply.', style: TextStyle(color: Colors.white60, fontSize: 12)),
+            ]),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(dialogContext, selectedResolution), child: const Text('Start cloud export')),
+            ],
+          ),
+        ),
+      );
+      if (resolution == null || !mounted) return;
+      setState(() { _exporting = true; _watchingRewardedAd = false; _progress = 0; _exportStatus = 'Preparing secure upload…'; });
+      final result = await service.renderProject(
+        project: _project,
+        resolution: resolution,
+        onProgress: (progress) {
+          if (mounted) setState(() { _progress = progress.progress.clamp(0, 1); _exportStatus = progress.message ?? progress.stage; });
+        },
+      );
+      final resultPath = result['path'] as String;
+      try { await _recordExport(resultPath); } catch (_) {}
+      final preview = VideoPlayerController.file(File(resultPath));
+      try {
+        await preview.initialize();
+        await _exportController?.dispose();
+        if (!mounted) { await preview.dispose(); return; }
+        setState(() { _exportController = preview; _previewingExport = true; _exportPath = resultPath; _progress = 1; _exportStatus = 'Cloud export complete'; });
+        _message('Cloud export complete. Review, save, or share your video.');
+      } catch (_) {
+        await preview.dispose();
+        if (mounted) { setState(() { _exportPath = resultPath; _progress = 1; }); _message('Cloud export is downloaded, but this device could not preview it. You can still save or share the file.'); }
+      }
+    } catch (error) {
+      if (mounted) _message('Cloud export: ${error.toString().replaceFirst('Exception: ', '')}');
+    } finally {
+      if (mounted) setState(() { _exporting = false; _watchingRewardedAd = false; });
+    }
+  }
+
+  Future<void> _exportLocal() async {
+    if (_exporting || _project.clips.isEmpty) return;
     const creditKey = 'vyntra_project_export_credits_v1';
     var credits = widget.store.preferences.getInt(creditKey) ?? 0;
     setState(() { _exporting = true; _watchingRewardedAd = credits <= 0; _progress = 0; });
@@ -409,6 +548,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
         await widget.store.preferences.setInt(creditKey, credits);
       }
       if (mounted) setState(() => _watchingRewardedAd = false);
+      setState(() => _exportStatus = 'Rendering project on this device…');
       _message('Rendering project…');
       final path = '${Directory.systemTemp.path}/vyntra_${_project.id}_${DateTime.now().microsecondsSinceEpoch}.mp4';
       final resultPath = await _processing.exportProject(
@@ -1073,7 +1213,7 @@ class _ProjectEditorScreenState extends State<ProjectEditorScreen> {
                   LinearProgressIndicator(value: !_watchingRewardedAd && _progress > 0 ? _progress : null, minHeight: 3),
                   const SizedBox(height: 6),
                   Row(children: [
-                    Expanded(child: Text(_watchingRewardedAd ? 'Unlocking export…' : _progress > 0 ? 'Rendering · ${(_progress * 100).round()}%' : 'Rendering project…', style: TextStyle(color: accent, fontSize: 11))),
+                    Expanded(child: Text(_watchingRewardedAd ? 'Unlocking export…' : _exportStatus, style: TextStyle(color: accent, fontSize: 11))),
                     if (!_watchingRewardedAd) TextButton(onPressed: () => _processing.cancel(), child: const Text('Cancel')),
                   ]),
                 ]),
