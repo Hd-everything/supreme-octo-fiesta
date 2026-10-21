@@ -24,6 +24,9 @@ jobs:
           cache: true
       - name: Validate cloud renderer Python syntax
         run: python3 -m py_compile cloud-renderer/worker.py
+      - name: Test cloud render resolution calculations
+        working-directory: cloud-renderer
+        run: python3 -m unittest discover -s . -p 'test_*.py'
       - name: Build cloud renderer container
         run: docker build --tag vyntra-cloud-renderer cloud-renderer
       - name: Restore packages
