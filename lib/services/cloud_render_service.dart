@@ -127,7 +127,8 @@ class CloudRenderService {
 
     while (true) {
       await Future<void>.delayed(const Duration(seconds: 3));
-      job = Map<String, dynamic>.from((await _invoke({'action': 'status', 'jobId': jobId})['job'] as Map));
+      final statusResponse = await _invoke({'action': 'status', 'jobId': jobId});
+      job = Map<String, dynamic>.from(statusResponse['job'] as Map);
       await _rememberJob(job);
       final status = job['status'] as String? ?? 'failed';
       final realProgress = (job['progress'] as num?)?.toDouble() ?? 0;
@@ -149,7 +150,8 @@ class CloudRenderService {
         ? Uri.parse(url)
         : Uri.parse('${const String.fromEnvironment('SUPABASE_URL')}/storage/v1${url.startsWith('/') ? url : '/$url'}');
     final outputPath = '${Directory.systemTemp.path}/vyntra_cloud_${jobId}.mp4';
-    final request = await HttpClient().getUrl(downloadUri);
+    final httpClient = HttpClient();
+    final request = await httpClient.getUrl(downloadUri);
     final response = await request.close();
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw const CloudRenderException('The cloud export is ready, but downloading it failed. Try again from your cloud job history.');
@@ -167,6 +169,7 @@ class CloudRenderService {
       await sink.flush();
     } finally {
       await sink.close();
+      httpClient.close(force: true);
     }
     if (!await file.exists() || await file.length() == 0) throw const CloudRenderException('The downloaded export is empty.');
     onProgress(const CloudRenderProgress(stage: 'completed', progress: 1, message: 'Cloud export verified and downloaded'));
