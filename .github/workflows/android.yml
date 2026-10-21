@@ -91,5 +91,8 @@ jobs:
         # Flutter stable now requires Gradle 8.14+; this repository's checked-in
         # Android shell uses an older wrapper. Skip Flutter's preflight version
         # gate so Gradle can report any actual build incompatibility.
-        run: flutter build apk --release --android-skip-build-dependency-validation
+        run: >-
+          flutter build apk --release --android-skip-build-dependency-validation
+          --dart-define=SUPABASE_URL="${{ secrets.SUPABASE_URL }}"
+          --dart-define=SUPABASE_PUBLISHABLE_KEY="${{ secrets.SUPABASE_PUBLISHABLE_KEY }}"
 
