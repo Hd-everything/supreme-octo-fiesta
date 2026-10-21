@@ -50,7 +50,7 @@ def storage_upload(source: Path, object_path: str):
     with source.open("rb") as stream:
         response = requests.post(url, data=stream, timeout=(30, 900), headers={
             "apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}",
-            "Content-Type": "video/mp4", "x-upsert": "false",
+            "Content-Type": "video/mp4", "x-upsert": "true",
         })
     response.raise_for_status()
 
@@ -260,6 +260,9 @@ def main():
                 update_job(job["id"], status="processing", progress=0, worker_id=WORKER_ID)
                 with tempfile.TemporaryDirectory(prefix="vyntra-render-") as directory:
                     output, metadata = render(job, Path(directory))
+                    current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job["id"]) + "&select=status")
+                    if current and current[0]["status"] == "cancel_requested":
+                        raise InterruptedError("cancelled")
                     update_job(job["id"], status="finalizing", progress=96)
                     output_path = f'{job["owner_id"]}/exports/{job["id"]}.mp4'
                     storage_upload(output, output_path)
