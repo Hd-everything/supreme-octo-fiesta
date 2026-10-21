@@ -64,6 +64,27 @@ def safe_number(value, low, high, name):
     if number < low or number > high: raise ValueError("invalid_" + name)
     return number
 
+def output_dimensions(source_width: int, source_height: int, rotation: int, aspect_ratio: str, resolution: str):
+    edge = {"720p": 720, "1080p": 1080, "1440p": 1440, "2160p": 2160, "4320p": 4320}.get(resolution)
+    if edge is None: raise ValueError("unsupported_resolution")
+    ratios = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0, "4:5": 4 / 5}
+    if aspect_ratio == "Original":
+        if rotation % 180 == 90: source_width, source_height = source_height, source_width
+        target_ratio = source_width / max(1, source_height)
+    elif aspect_ratio in ratios:
+        target_ratio = ratios[aspect_ratio]
+    else:
+        raise ValueError("invalid_aspect_ratio")
+    if target_ratio >= 1:
+        width, height = round(edge * target_ratio), edge
+    else:
+        width, height = edge, round(edge / target_ratio)
+    width -= width % 2
+    height -= height % 2
+    if width * height > 7680 * 4320: raise ValueError("output_dimensions_too_large")
+    return width, height
+
+
 def render(job, work: Path):
     plan = job["project_snapshot"]
     clips = plan.get("clips")
@@ -116,25 +137,10 @@ def render(job, work: Path):
         input_args += ["-i", str(music_path)]
 
     first = probe_info[0][0]
-    ratio = plan.get("aspectRatio", "Original")
-    ratios = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0, "4:5": 4 / 5}
-    if ratio == "Original":
-        source_width = int(first.get("width", 16))
-        source_height = int(first.get("height", 9))
-        if int(clips[0].get("rotation", 0)) % 180 == 90:
-            source_width, source_height = source_height, source_width
-        target_ratio = source_width / max(1, source_height)
-    elif ratio in ratios:
-        target_ratio = ratios[ratio]
-    else:
-        raise ValueError("invalid_aspect_ratio")
-    # Resolution labels use standard short-edge dimensions. Portrait 4K is 2160x3840.
-    if target_ratio >= 1:
-        width, height = round(edge * target_ratio), edge
-    else:
-        width, height = edge, round(edge / target_ratio)
-    width -= width % 2; height -= height % 2
-    if width * height > 7680 * 4320: raise ValueError("output_dimensions_too_large")
+    width, height = output_dimensions(
+        int(first.get("width", 16)), int(first.get("height", 9)),
+        int(clips[0].get("rotation", 0)), plan.get("aspectRatio", "Original"), resolution,
+    )
 
     filters, video_labels, audio_labels = [], [], []
     for i, (clip, (v, has_audio)) in enumerate(zip(clips, probe_info)):
