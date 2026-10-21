@@ -40,3 +40,28 @@ The generated application ID is `com.ptip.statushd`. Keep it unchanged when gene
 The **Build Vyntra** workflow verifies the Flutter code, runs tests, configures Android signing from repository secrets, and uploads the release APK as `vyntra-android-release` when its signing secrets are configured.
 
 Vyntra is independent and is not affiliated with WhatsApp, TikTok, Instagram, or YouTube. Those platforms may recompress media after upload.
+
+
+## Cloud export status
+
+Vyntra now includes an authenticated Supabase cloud-export client, the `vyntra-render-jobs` Edge Function, an isolated `vyntra_render_jobs` table, and a separate FFmpeg container under `cloud-renderer/`. The app offers local or cloud export; cloud export deliberately refuses to upload media until the server reports that a worker has been deployed and verified.
+
+### Configure the Flutter app
+
+Add GitHub Actions repository secrets `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`. The workflows pass these as Dart defines; neither value is a service-role credential. The app keeps editing available when these are absent, but cloud sign-in is disabled.
+
+The first cloud export requires a Supabase Auth account. Source clips, soundtrack, and image overlays are uploaded to the private `vyntra-media` bucket under the signed-in user's UUID prefix. Uploads are limited to 1 GiB per file by default. Supabase's plan-level storage limits still apply.
+
+### Deploy the FFmpeg worker
+
+See [cloud-renderer/README.md](cloud-renderer/README.md). Deploy the container to a long-running worker host, configure its server-only Supabase URL and service-role key, and verify a real test render. The worker polls the database queue; Edge Functions do not run FFmpeg.
+
+Only after deployment and end-to-end verification should the Supabase Edge Function secrets `VYNTRA_RENDER_WORKER_READY=true` be set. Keep `VYNTRA_ENABLE_8K` false until the worker has enough RAM and disk and a genuine 7680×4320 sample has been rendered and decoded. The repository's GitHub Actions build does not deploy the worker automatically.
+
+### Current limitations
+
+- Local projects still store device paths. Cloud export uploads referenced assets and sends a project snapshot; it does not sync editable projects across devices.
+- Upload retries/resume after app restart are not yet implemented; failed uploads can be retried by starting a new export.
+- The current worker handles clip order/trims, 90-degree rotation, picture adjustments, volume, aspect ratio, soundtrack mixing, and timed text/image overlays. It explicitly rejects transitions and speed changes because those are not currently represented by the saved project model.
+- The worker is not deployed from this repository by CI. No end-to-end cloud 4K or 8K export is claimed until a worker host is configured and tested with sample media.
+- Gemini is used only for structured AI edit suggestions. It does not render video or claim to restore missing image detail.
