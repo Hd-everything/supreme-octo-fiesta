@@ -18,6 +18,8 @@ dependencies:
   shared_preferences: ^2.3.3
   video_player: ^2.9.2
   crypto: ^3.0.7
+  path: ^1.9.1
+  supabase_flutter: ^2.10.3
   tflite_flutter: ^0.12.1
   image: ^4.5.4
   google_mobile_ads: ^9.1.0
