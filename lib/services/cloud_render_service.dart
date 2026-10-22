@@ -31,20 +31,29 @@ class CloudRenderService {
   final SupabaseClient client;
   final SharedPreferences? preferences;
 
-  bool get isSignedIn => client.auth.currentUser != null;
-
-  Future<Map<String, dynamic>> capabilities() => _invoke({'action': 'capabilities'});
-
-  Future<void> signIn(String email, String password) async {
-    final result = await client.auth.signInWithPassword(email: email.trim(), password: password);
-    if (result.user == null) throw const CloudRenderException('Sign-in did not return a user.');
+  /// Creates a Supabase anonymous session in the background. No email, password,
+  /// account form, or user-visible sign-in flow is required.
+  Future<void> _ensureGuestSession() async {
+    if (client.auth.currentSession != null) return;
+    try {
+      await client.auth.signInAnonymously();
+    } on AuthException {
+      throw const CloudRenderException(
+        'Guest cloud access needs to be enabled in the Supabase Auth settings. No account is required.',
+      );
+    } catch (_) {
+      throw const CloudRenderException(
+        'Could not start a guest cloud session. Check your connection and try again.',
+      );
+    }
+    if (client.auth.currentSession == null) {
+      throw const CloudRenderException('Guest cloud session was not created. Please try again.');
+    }
   }
 
-  Future<void> signUp(String email, String password) async {
-    final result = await client.auth.signUp(email: email.trim(), password: password);
-    if (result.session == null) {
-      throw const CloudRenderException('Check your email to confirm the account, then sign in before cloud export.');
-    }
+  Future<Map<String, dynamic>> capabilities() async {
+    await _ensureGuestSession();
+    return _invoke({'action': 'capabilities'});
   }
 
   Future<Map<String, dynamic>> renderProject({
@@ -54,7 +63,7 @@ class CloudRenderService {
     int quality = 23,
     required void Function(CloudRenderProgress) onProgress,
   }) async {
-    if (!isSignedIn) throw const CloudRenderException('Sign in to Supabase before starting a cloud export.');
+    await _ensureGuestSession();
     final available = await capabilities();
     if (available['workerReady'] != true) {
       throw const CloudRenderException('Cloud rendering is not available yet: the FFmpeg worker has not been deployed and verified.');
