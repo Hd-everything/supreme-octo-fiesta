@@ -30,7 +30,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
   DeviceMedia? _source;
   OutputResolution _resolution = OutputResolution.p1080;
   String _cloudResolution = '1080p';
-  Set<String> _cloudResolutions = <String>{};
+  Set<String> _cloudResolutions = <String>{'1440p', '2160p', '2880p', '3456p', '4320p'};
   bool _useCloud = false;
   bool _processingVideo = false;
   bool _loadingCapabilities = true;
@@ -96,49 +96,12 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
         _cloudAvailable = caps['workerReady'] == true;
         _cloudResolutions = resolutions;
         _loadingCapabilities = false;
-        if (!resolutions.contains(_cloudResolution)) {
-          _cloudResolution = resolutions.contains('1080p') ? '1080p' : (resolutions.isNotEmpty ? resolutions.first : '1080p');
+        if (resolutions.isNotEmpty && !resolutions.contains(_cloudResolution)) {
+          _cloudResolution = resolutions.contains('2160p') ? '2160p' : resolutions.first;
         }
       });
     } catch (_) {
       if (mounted) setState(() { _loadingCapabilities = false; _cloudAvailable = false; });
-    }
-  }
-
-  Future<bool> _ensureSignedIn() async {
-    if (!_cloudConfigured) {
-      setState(() => _status = 'Cloud rendering is not configured in this build. Standard on-device export remains available.');
-      return false;
-    }
-    if (_cloud!.isSignedIn) return true;
-    final email = TextEditingController();
-    final password = TextEditingController();
-    final credentials = await showDialog<(String, String)>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Sign in for cloud rendering'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email')),
-          const SizedBox(height: 10),
-          TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, (email.text.trim(), password.text)), child: const Text('Sign in')),
-        ],
-      ),
-    );
-    if (credentials == null || credentials.$1.isEmpty || credentials.$2.isEmpty) return false;
-    try {
-      await _cloud!.signIn(credentials.$1, credentials.$2);
-      if (mounted) setState(() => _status = 'Signed in. Ready for secure cloud export.');
-      return true;
-    } catch (error) {
-      if (mounted) setState(() => _status = error.toString());
-      return false;
-    } finally {
-      email.dispose();
-      password.dispose();
     }
   }
 
@@ -182,14 +145,32 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
       _outputBytes = null;
     });
     try {
+      if (cloudMode) {
+        if (!_cloudConfigured) throw const CloudRenderException('Cloud export needs the Supabase project configuration in this build.');
+        final preflight = await _cloud!.capabilities();
+        if (preflight['workerReady'] != true) {
+          throw const CloudRenderException('Cloud rendering is being prepared. Please try again after the worker is ready.');
+        }
+        final supported = (preflight['resolutions'] as List? ?? const []).map((e) => e.toString()).toSet();
+        if (!supported.contains(_cloudResolution)) {
+          throw CloudRenderException('The cloud renderer does not currently support $_cloudResolution.');
+        }
+      }
       if (!await _earnExportAd()) return;
       if (!mounted) return;
       String outputPath;
       String outputLabel;
       if (cloudMode) {
-        final signedIn = await _ensureSignedIn();
-        if (!signedIn || !mounted) return;
-        if (!_cloudAvailable) throw const CloudRenderException('The cloud worker is not currently available. Choose on-device 720p, 1080p, or 1440p instead.');
+        if (!_cloudConfigured) throw const CloudRenderException('Cloud export needs the Supabase project configuration in this build.');
+        final capabilities = await _cloud!.capabilities();
+        if (capabilities['workerReady'] != true) {
+          throw const CloudRenderException('Cloud rendering is being prepared. Your video has not been uploaded and no export job was charged.');
+        }
+        final supported = (capabilities['resolutions'] as List? ?? const []).map((e) => e.toString()).toSet();
+        if (!supported.contains(_cloudResolution)) {
+          throw CloudRenderException('The cloud renderer is not yet advertising ${_cloudResolution} output. Choose a supported resolution or try again later.');
+        }
+        if (!mounted) return;
         final metadata = await _processing.inspect(source.path);
         final now = DateTime.now();
         final id = 'status_${now.microsecondsSinceEpoch}';
@@ -316,10 +297,11 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
     final accent = Theme.of(context).colorScheme.primary;
     final preview = _preview;
     final cloudOptions = <(String, String)>[
-      if (_cloudAvailable && _cloudResolutions.contains('1080p')) ('1080p', '1080p · Cloud'),
-      if (_cloudAvailable && _cloudResolutions.contains('1440p')) ('1440p', '1440p · Cloud'),
-      if (_cloudAvailable && _cloudResolutions.contains('2160p')) ('2160p', '4K · Cloud'),
-      if (_cloudAvailable && _cloudResolutions.contains('4320p')) ('4320p', '8K · Cloud'),
+      ('1440p', '2K / QHD · Cloud'),
+      ('2160p', '4K · Cloud'),
+      ('2880p', '5K · Cloud'),
+      ('3456p', '6K · Cloud'),
+      ('4320p', '8K · Cloud'),
     ];
     return Scaffold(
       appBar: AppBar(title: const Text('Status HD')),
@@ -373,32 +355,31 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
             Row(children: [
               Expanded(child: Text('Cloud rendering', style: Theme.of(context).textTheme.titleMedium)),
               if (_loadingCapabilities) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-              if (!_loadingCapabilities) Text(_cloudAvailable ? 'Available' : 'Unavailable', style: TextStyle(color: _cloudAvailable ? Colors.greenAccent : Colors.orangeAccent, fontSize: 12)),
+              if (!_loadingCapabilities) Text(_cloudAvailable ? 'Ready' : 'Setup needed', style: TextStyle(color: _cloudAvailable ? Colors.greenAccent : Colors.orangeAccent, fontSize: 12)),
             ]),
-            if (_cloudAvailable) ...[
-              const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: _useCloud,
-                onChanged: _processingVideo ? null : (value) => setState(() => _useCloud = value),
-                title: const Text('Render in cloud'),
-                subtitle: const Text('Use remote FFmpeg for 1080p, 1440p, 4K or 8K. Uploads your source video.'),
-              ),
-              Wrap(spacing: 8, runSpacing: 8, children: [
-                for (final option in cloudOptions)
-                  ChoiceChip(
-                    label: Text(option.$2),
-                    selected: _cloudResolution == option.$1 && _useCloud,
-                    onSelected: _processingVideo ? null : (_) => setState(() { _cloudResolution = option.$1; _useCloud = true; }),
-                  ),
-              ]),
-              const SizedBox(height: 6),
-              const Text('4K/8K are rendered on the cloud worker, not on your phone. Cloud 1080p and 1440p are available too. Options appear only when the deployed worker advertises them.', style: TextStyle(color: Colors.white60, fontSize: 12)),
-            ] else
-              const Padding(
-                padding: EdgeInsets.only(top: 6),
-                child: Text('Cloud export requires Supabase sign-in and a deployed, healthy FFmpeg worker. Standard on-device export remains available.', style: TextStyle(color: Colors.white60, fontSize: 12)),
-              ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _useCloud,
+              onChanged: _processingVideo ? null : (value) => setState(() => _useCloud = value),
+              title: const Text('Render in cloud'),
+              subtitle: const Text('Guest access — no sign-in. Cloud exports upload your selected video for processing.'),
+            ),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final option in cloudOptions)
+                ChoiceChip(
+                  label: Text(option.$2),
+                  selected: _cloudResolution == option.$1 && _useCloud,
+                  onSelected: _processingVideo ? null : (_) => setState(() { _cloudResolution = option.$1; _useCloud = true; }),
+                ),
+            ]),
+            const SizedBox(height: 6),
+            Text(
+              _cloudAvailable
+                  ? 'Cloud renderer is responding. High-resolution exports require a completed rewarded ad.'
+                  : 'Cloud resolutions are shown now. Guest access needs no account; rendering starts once the cloud worker is configured and healthy. Standard on-device exports remain available.',
+              style: const TextStyle(color: Colors.white60, fontSize: 12),
+            ),
             const SizedBox(height: 16),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
