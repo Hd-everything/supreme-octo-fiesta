@@ -45,7 +45,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
   late final CloudRenderService? _cloud;
 
   bool get _cloudConfigured => vyntraSupabaseConfigured && _cloud != null;
-  bool get _highResolution => _cloudResolution == '2160p' || _cloudResolution == '4320p';
+  bool get _highResolution => _cloudResolution != '1080p';
 
   @override
   void initState() {
@@ -212,8 +212,12 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
         outputLabel = switch (resolution) {
           '4320p' => '8K (cloud)',
           '2160p' => '4K (cloud)',
-          '1440p' => '1440p (cloud)',
-          _ => '1080p (cloud)',
+          '1440p' => '2K / QHD (cloud)',
+          '2160p' => '4K (cloud)',
+          '2880p' => '5K (cloud)',
+          '3456p' => '6K (cloud)',
+          '4320p' => '8K (cloud)',
+          _ => '${resolution} (cloud)',
         };
       } else {
         setState(() => _status = 'Inspecting source video…');
@@ -355,7 +359,7 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
             Row(children: [
               Expanded(child: Text('Cloud rendering', style: Theme.of(context).textTheme.titleMedium)),
               if (_loadingCapabilities) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-              if (!_loadingCapabilities) Text(_cloudAvailable ? 'Ready' : 'Setup needed', style: TextStyle(color: _cloudAvailable ? Colors.greenAccent : Colors.orangeAccent, fontSize: 12)),
+              if (!_loadingCapabilities) Text(_cloudAvailable ? 'Ready' : 'Cloud setup pending', style: TextStyle(color: _cloudAvailable ? Colors.greenAccent : Colors.orangeAccent, fontSize: 12)),
             ]),
             const SizedBox(height: 8),
             SwitchListTile(
@@ -376,8 +380,8 @@ class _StatusHdScreenState extends State<StatusHdScreen> {
             const SizedBox(height: 6),
             Text(
               _cloudAvailable
-                  ? 'Cloud renderer is responding. High-resolution exports require a completed rewarded ad.'
-                  : 'Cloud resolutions are shown now. Guest access needs no account; rendering starts once the cloud worker is configured and healthy. Standard on-device exports remain available.',
+                  ? 'Cloud renderer is responding. Cloud exports require a completed rewarded ad.'
+                  : 'Guest cloud export needs no sign-in screen. High-resolution options are available; cloud processing activates when the FFmpeg worker is deployed and verified. On-device export still works now.',
               style: const TextStyle(color: Colors.white60, fontSize: 12),
             ),
             const SizedBox(height: 16),
