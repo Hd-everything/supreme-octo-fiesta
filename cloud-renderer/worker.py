@@ -65,7 +65,7 @@ def safe_number(value, low, high, name):
     return number
 
 def output_dimensions(source_width: int, source_height: int, rotation: int, aspect_ratio: str, resolution: str):
-    edge = {"720p": 720, "1080p": 1080, "1440p": 1440, "2160p": 2160, "4320p": 4320}.get(resolution)
+    edge = {"720p": 720, "1080p": 1080, "1440p": 1440, "2160p": 2160, "2880p": 2880, "3456p": 3456, "4320p": 4320}.get(resolution)
     if edge is None: raise ValueError("unsupported_resolution")
     ratios = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0, "4:5": 4 / 5}
     if aspect_ratio == "Original":
