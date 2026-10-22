@@ -64,7 +64,7 @@ Deno.serve(async (req: Request) => {
     if (action === "capabilities") {
       const workerReady = Deno.env.get("VYNTRA_RENDER_WORKER_READY") === "true";
       const enable8k = workerReady && Deno.env.get("VYNTRA_ENABLE_8K") === "true";
-      return json({ workerReady, resolutions: workerReady ? ["720p", "1080p", "1440p", "2160p", ...(enable8k ? ["4320p"] : [])] : [], codecs: workerReady ? ["h264", "h265"] : [], maxUploadBytes });
+      return json({ workerReady, resolutions: workerReady ? ["720p", "1080p", "1440p", "2160p", "2880p", "3456p", ...(enable8k ? ["4320p"] : [])] : [], codecs: workerReady ? ["h264", "h265"] : [], maxUploadBytes, guestAccess: true });
     }
     if (action === "prepare_upload") {
       const name = typeof body.fileName === "string" ? body.fileName.split(/[\\/]/).pop()!.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100) : "media.bin";
@@ -88,7 +88,7 @@ Deno.serve(async (req: Request) => {
       let paths: string[];
       try { paths = objectPaths(snapshot, userId); } catch (error) { return json({ error: String(error).replace("Error: ", "") }, 422); }
       const resolution = String(body.resolution ?? "");
-      if (!["720p", "1080p", "1440p", "2160p", "4320p"].includes(resolution)) return json({ error: "unsupported_resolution" }, 400);
+      if (!["720p", "1080p", "1440p", "2160p", "2880p", "3456p", "4320p"].includes(resolution)) return json({ error: "unsupported_resolution" }, 400);
       if (resolution === "4320p" && Deno.env.get("VYNTRA_ENABLE_8K") !== "true") return json({ error: "8k_not_enabled" }, 409);
       const codec = String(body.codec ?? "h264");
       if (!["h264", "h265"].includes(codec)) return json({ error: "unsupported_codec" }, 400);
