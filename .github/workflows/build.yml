@@ -135,7 +135,11 @@ jobs:
           manifest.write_text(text)
           PY
 
-          printf '\nkotlin.jvm.target.validation.mode=warning\norg.gradle.vfs.watch=false\norg.gradle.daemon=false\norg.gradle.workers.max=2\n' >> /tmp/statushd/gradle.properties
+          # Flutter's generated template requests an 8 GiB Gradle heap, which can
+          # exceed the memory available on a GitHub-hosted runner and kill the
+          # Gradle daemon during release compilation. Override it with a bounded
+          # heap and compile Kotlin in the Gradle process to avoid a second JVM.
+          printf '\norg.gradle.jvmargs=-Xmx3G -XX:MaxMetaspaceSize=1G -XX:ReservedCodeCacheSize=512m -Dfile.encoding=UTF-8\nkotlin.compiler.execution.strategy=in-process\nkotlin.jvm.target.validation.mode=warning\norg.gradle.vfs.watch=false\norg.gradle.daemon=false\norg.gradle.parallel=false\norg.gradle.workers.max=2\n' >> /tmp/statushd/gradle.properties
 
       - name: Copy Vyntra sources
         shell: bash
