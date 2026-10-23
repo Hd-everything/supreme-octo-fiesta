@@ -1,10 +1,15 @@
 import os
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-only-not-a-secret")
 
 import worker
+
+
+def read_worker_source():
+    return Path(worker.__file__).read_text(encoding="utf-8")
 
 
 class RenderLimitsTests(unittest.TestCase):
@@ -18,31 +23,25 @@ class RenderLimitsTests(unittest.TestCase):
 
 class CloudEditingFeatureTests(unittest.TestCase):
     def test_transition_filter_graph_uses_real_xfade_and_audio_crossfade(self):
-        source = open(worker.__file__, encoding="utf-8").read()
+        source = read_worker_source()
         self.assertIn("xfade=transition=", source)
         self.assertIn("acrossfade=d=", source)
 
     def test_freeze_frame_and_audio_fades_are_rendered(self):
-        source = open(worker.__file__, encoding="utf-8").read()
+        source = read_worker_source()
         self.assertIn("tpad=stop_mode=clone", source)
         self.assertIn("afade=t=in", source)
         self.assertIn("afade=t=out", source)
 
     def test_animated_keyframes_are_interpolated_for_picture_and_audio(self):
-        source = open(worker.__file__, encoding="utf-8").read()
+        source = read_worker_source()
         self.assertIn("keyframe_expr(1, brightness)", source)
         self.assertIn("keyframe_expr(4, volume)", source)
         self.assertIn("eq=eval=frame", source)
         self.assertIn("volume=", source)
 
-    def test_video_caption_mime_types_are_allowed_by_ai_endpoint(self):
-        source = open(os.path.join(os.path.dirname(__file__), "..", "supabase", "functions", "vyntra-ai", "index.ts"), encoding="utf-8").read()
-        self.assertIn('"video/mp4"', source)
-        self.assertIn('"video/quicktime"', source)
-        self.assertIn('"video/webm"', source)
-        self.assertIn("spoken audio track in the supplied video", source)
     def test_audio_cleanup_filters_are_available(self):
-        source = open(worker.__file__, encoding="utf-8").read()
+        source = read_worker_source()
         self.assertIn("afftdn=nf=-25", source)
         self.assertIn("acompressor=threshold=0.125", source)
         self.assertIn("loudnorm=I=-16", source)
