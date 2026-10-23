@@ -1,6 +1,12 @@
 name: Vyntra Status HD cloud render
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/status-hd-render.yml"
+      - "cloud-renderer/**"
   repository_dispatch:
     types:
       - vyntra_render_requested
@@ -32,7 +38,7 @@ jobs:
           echo "FFprobe path: $(command -v ffprobe)"
           ffmpeg -hide_banner -version
           ffprobe -hide_banner -version
-          ffmpeg -hide_banner -filters | grep -E ' (drawtext|xfade|acrossfade|overlay|scale) ' 
+          ffmpeg -hide_banner -filters | grep -E ' (drawtext|xfade|acrossfade|overlay|scale) '
 
       - name: Set up Python worker
         shell: bash
