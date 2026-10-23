@@ -2,38 +2,56 @@ name: Vyntra Status HD cloud render
 
 on:
   repository_dispatch:
-    types: [vyntra_render_requested]
+    types:
+      - vyntra_render_requested
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Each run processes at most one queued job. Do not cancel a render because another
-# user submitted a job while it was running.
 jobs:
   render:
-    name: Process one queued render
+    name: Install FFmpeg and process one queued render
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - name: Checkout trusted default branch
+      - name: Checkout worker
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
-      - name: Set up bounded temporary worker
+      - name: Install system FFmpeg and FFprobe
         shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends ffmpeg
-          python3 -m venv /tmp/vyntra-venv
-          /tmp/vyntra-venv/bin/pip install --disable-pip-version-check --no-cache-dir -r cloud-renderer/requirements.txt
-          command -v ffmpeg
-          command -v ffprobe
-          ffmpeg -version | head -n 1
+          sudo apt-get clean
+          hash -r
+          echo "FFmpeg path: $(command -v ffmpeg)"
+          echo "FFprobe path: $(command -v ffprobe)"
+          ffmpeg -hide_banner -version
+          ffprobe -hide_banner -version
+          ffmpeg -hide_banner -filters | grep -E ' (drawtext|xfade|acrossfade|overlay|scale) ' 
 
-      - name: Process one queued job
+      - name: Set up Python worker
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 --version
+          python3 -m venv /tmp/vyntra-venv
+          /tmp/vyntra-venv/bin/python -m pip install --upgrade --disable-pip-version-check pip
+          /tmp/vyntra-venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir -r cloud-renderer/requirements.txt
+          /tmp/vyntra-venv/bin/python -m py_compile cloud-renderer/worker.py
+
+      - name: Run worker tests
+        shell: bash
+        working-directory: cloud-renderer
+        run: |
+          set -Eeuo pipefail
+          /tmp/vyntra-venv/bin/python -m unittest -v test_worker.py
+
+      - name: Process one queued render
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -45,7 +63,12 @@ jobs:
           VYNTRA_WORKER_ID: github-actions-${{ github.run_id }}-${{ github.run_attempt }}
         shell: bash
         run: |
-          set -euo pipefail
-          test -n "$SUPABASE_URL"
-          test -n "$SUPABASE_SERVICE_ROLE_KEY"
+          set -Eeuo pipefail
+          if [[ -z "${SUPABASE_URL}" || -z "${SUPABASE_SERVICE_ROLE_KEY}" ]]; then
+            echo "::error::Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY Actions secret."
+            exit 1
+          fi
+          test -x "$(command -v ffmpeg)"
+          test -x "$(command -v ffprobe)"
+          ffmpeg -hide_banner -version | head -n 1
           /tmp/vyntra-venv/bin/python -u cloud-renderer/worker.py
