@@ -1,0 +1,51 @@
+name: Vyntra Status HD cloud render
+
+on:
+  repository_dispatch:
+    types: [vyntra_render_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Each run processes at most one queued job. Do not cancel a render because another
+# user submitted a job while it was running.
+jobs:
+  render:
+    name: Process one queued render
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up bounded temporary worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          python3 -m venv /tmp/vyntra-venv
+          /tmp/vyntra-venv/bin/pip install --disable-pip-version-check --no-cache-dir -r cloud-renderer/requirements.txt
+          command -v ffmpeg
+          command -v ffprobe
+          ffmpeg -version | head -n 1
+
+      - name: Process one queued job
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          VYNTRA_STORAGE_BUCKET: vyntra-media
+          VYNTRA_ONESHOT: "true"
+          VYNTRA_MAX_DURATION_SECONDS: "180"
+          VYNTRA_MAX_INPUT_BYTES: "52428800"
+          VYNTRA_ENABLE_8K: "false"
+          VYNTRA_WORKER_ID: github-actions-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_URL"
+          test -n "$SUPABASE_SERVICE_ROLE_KEY"
+          /tmp/vyntra-venv/bin/python -u cloud-renderer/worker.py
