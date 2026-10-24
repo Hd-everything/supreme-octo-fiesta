@@ -70,7 +70,7 @@ def safe_number(value, low, high, name):
 def output_dimensions(source_width: int, source_height: int, rotation: int, aspect_ratio: str, resolution: str):
     edge = {"720p": 720, "1080p": 1080, "1440p": 1440, "2160p": 2160, "2880p": 2880, "3456p": 3456, "4320p": 4320}.get(resolution)
     if edge is None: raise ValueError("unsupported_resolution")
-    ratios = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0, "4:5": 4 / 5}
+    ratios = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0, "4:5": 4 / 5, "3:4": 3 / 4, "4:3": 4 / 3, "21:9": 21 / 9}
     if aspect_ratio == "Original":
         if rotation % 180 == 90: source_width, source_height = source_height, source_width
         target_ratio = source_width / max(1, source_height)
@@ -128,7 +128,12 @@ def render(job, work: Path):
         meta = probe(path)
         v = next((s for s in meta.get("streams", []) if s.get("codec_type") == "video"), None)
         if not v: raise ValueError("source_has_no_video")
+        media_type = clip.get("mediaType", "video")
+        if media_type not in ("video", "image"): raise ValueError("unsupported_media_type")
         duration = float(meta.get("format", {}).get("duration", 0))
+        if media_type == "image":
+            if Path(key).suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"): raise ValueError("unsupported_image_format")
+            duration = safe_number(clip.get("durationMs", 0), 1, MAX_DURATION * 1000, "image_duration") / 1000
         if duration <= 0 or duration > MAX_DURATION:
             raise ValueError("source_duration_limit")
         start = safe_number(clip.get("startMs", 0), 0, duration * 1000, "trim_start") / 1000
@@ -137,9 +142,12 @@ def render(job, work: Path):
         speed = safe_number(clip.get("speed", 1.0), .25, 4.0, "speed")
         reverse = clip.get("reverse", False)
         if not isinstance(reverse, bool): raise ValueError("invalid_reverse")
-        input_args += ["-ss", str(start), "-t", str(end-start), "-i", str(path)]
+        if media_type == "image":
+            input_args += ["-loop", "1", "-t", str(end-start), "-i", str(path)]
+        else:
+            input_args += ["-ss", str(start), "-t", str(end-start), "-i", str(path)]
         freeze_ms = safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")
-        local.append(path); clip_lengths.append((end-start)/speed + freeze_ms/1000); probe_info.append((v, any(s.get("codec_type") == "audio" for s in meta.get("streams", []))))
+        local.append(path); clip_lengths.append((end-start)/speed + freeze_ms/1000); probe_info.append((v, media_type == "video" and any(s.get("codec_type") == "audio" for s in meta.get("streams", []))))
     if sum(clip_lengths) > MAX_DURATION: raise ValueError("project_duration_limit")
     music_path = None
     music = plan.get("musicPath")
@@ -167,14 +175,30 @@ def render(job, work: Path):
         reverse = clip.get("reverse", False)
         volume = safe_number(clip.get("volume", 1), 0, 1, "volume")
         effect = clip.get("effect", "none")
-        if effect not in ("none", "flash", "shake", "blur", "glitch", "phonk"): raise ValueError("unsupported_effect")
+        if effect not in ("none", "flash", "shake", "blur", "glitch", "phonk", "grayscale", "negative", "cinematic", "moody", "vivid", "dramatic", "vintage", "fade", "night", "sunset", "noir", "soft", "dreamy"):
+            raise ValueError("unsupported_effect")
         if reverse: vf.append("reverse")
-        vf += [f"scale={width}:{height}:force_original_aspect_ratio=increase", f"crop={width}:{height}", "setsar=1", "fps=30"]
+        frame_rate = int(safe_number(plan.get("exportFrameRate", 30), 24, 60, "frame_rate"))
+        if frame_rate not in (24, 25, 30, 50, 60): raise ValueError("unsupported_frame_rate")
+        vf += [f"scale={width}:{height}:force_original_aspect_ratio=increase", f"crop={width}:{height}", "setsar=1", f"fps={frame_rate}"]
         if effect == "flash": vf.append("eq=brightness=0.10:enable='lt(mod(t,0.4),0.08)'")
         elif effect == "shake": vf.append(f"crop=iw-24:ih-24:x=12+8*sin(2*PI*12*t):y=12+8*cos(2*PI*10*t),scale={width}:{height}")
         elif effect == "blur": vf.append("boxblur=4:1")
         elif effect == "glitch": vf.append("rgbashift=rh=8:bh=-8:enable='lt(mod(t,0.5),0.08)'")
         elif effect == "phonk": vf.append("eq=contrast=1.25:saturation=1.35")
+        elif effect == "grayscale": vf.append("hue=s=0")
+        elif effect == "negative": vf.append("negate")
+        elif effect == "soft": vf.append("gblur=sigma=1.5")
+        elif effect == "cinematic": vf.append("eq=brightness=0.015:contrast=1.13:saturation=1.08")
+        elif effect == "moody": vf.append("eq=brightness=-0.06:contrast=1.20:saturation=0.97")
+        elif effect == "vivid": vf.append("eq=brightness=0.025:contrast=1.20:saturation=1.20")
+        elif effect == "dramatic": vf.append("eq=contrast=1.30:saturation=1.10")
+        elif effect == "vintage": vf.append("colorbalance=rs=0.08:gs=0.02:bs=-0.05,eq=saturation=0.85:contrast=0.92")
+        elif effect == "fade": vf.append("eq=contrast=0.84:saturation=0.94:brightness=0.025")
+        elif effect == "night": vf.append("eq=brightness=-0.10:contrast=1.08:saturation=0.90,colorbalance=bs=0.08")
+        elif effect == "sunset": vf.append("colorbalance=rs=0.08:gs=0.02:bs=-0.08,eq=saturation=1.13")
+        elif effect == "noir": vf.append("hue=s=0,eq=contrast=1.25:brightness=-0.02")
+        elif effect == "dreamy": vf.append("gblur=sigma=2,eq=brightness=0.03:saturation=1.10")
         if speed != 1.0: vf.append(f"setpts=(PTS-STARTPTS)/{speed}")
         freeze_ms = safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")
         if freeze_ms: vf.append(f"tpad=stop_mode=clone:stop_duration={freeze_ms/1000:.6f}")

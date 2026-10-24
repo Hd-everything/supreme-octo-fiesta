@@ -4,13 +4,18 @@ This directory contains the FFmpeg worker used by the one-shot GitHub Actions wo
 
 ## Current supported render plan
 
-- Multiple ordered video clips, trims, 90-degree rotations, per-clip volume and picture adjustments.
-- Aspect-ratio framing, 720p / 1080p / 1440p (2K/QHD) / 2160p (4K) / 2880p (5K) / 3456p (6K) output, H.264 and H.265 if `libx265` exists.
+The worker supports photos and the editing operations below. Unsupported edits are rejected rather than silently omitted.
+
+- Ordered video clips and still photos (`png`, `jpg`, `jpeg`, `webp`), with trim points, 90-degree rotation, reverse, speed changes, freeze frames, per-clip volume, audio fades, and audio cleanup.
+- Cut, fade, fade-to-black, dissolve, wipe-left, and slide-right transitions, with audio crossfades.
+- Per-clip brightness, contrast, saturation, keyframed adjustments, and built-in looks: flash, shake, blur, glitch, phonk, grayscale, negative, cinematic, moody, vivid, dramatic, vintage, fade, night, sunset, noir, soft, and dreamy.
+- Original, 9:16, 16:9, 1:1, 4:5, 3:4, 4:3, and 21:9 framing.
 - Optional soundtrack mixing, timed text overlays, and positioned timed image overlays.
+- 24, 25, 30, 50, or 60 fps output; 720p through 6K output and opt-in 8K; H.264 and H.265 when `libx265` is available.
 - ffprobe output metadata validation plus a full decode pass before completion.
 - Private storage object paths and service-role credentials kept on the server.
 
-Unsupported effects are rejected explicitly. Transitions and speed changes are not represented by the current editor model and fail if supplied. 8K is disabled by default, has a worker RAM/disk guard, and must not be exposed unless the deployment is explicitly enabled and passes an actual 7680x4320 decode test.
+Each export is limited to 24 clips, 180 seconds of rendered timeline, and 50 MiB per source object. AI restoration, body tracking, background removal, optical-flow slow motion, animated sticker packs, and advanced masks are not implemented. 8K is disabled by default, has a worker RAM/disk guard, and must not be exposed unless the deployment is explicitly enabled and passes an actual 7680x4320 decode test.
 
 ## Deploy
 

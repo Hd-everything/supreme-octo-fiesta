@@ -70,13 +70,19 @@ class OutputDimensionsTests(unittest.TestCase):
     def test_square_ratio(self):
         self.assertEqual(worker.output_dimensions(1920, 1080, 0, "1:1", "1080p"), (1080, 1080))
 
+    def test_portrait_three_four_ratio(self):
+        self.assertEqual(worker.output_dimensions(1080, 1440, 0, "3:4", "1080p"), (1080, 1440))
+
+    def test_landscape_twenty_one_nine_ratio(self):
+        self.assertEqual(worker.output_dimensions(2520, 1080, 0, "21:9", "1080p"), (2520, 1080))
+
     def test_unknown_resolution_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "unsupported_resolution"):
             worker.output_dimensions(1920, 1080, 0, "16:9", "8k")
 
     def test_invalid_ratio_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "invalid_aspect_ratio"):
-            worker.output_dimensions(1920, 1080, 0, "21:9", "1080p")
+            worker.output_dimensions(1920, 1080, 0, "2:1", "1080p")
 
 
 if __name__ == "__main__":
