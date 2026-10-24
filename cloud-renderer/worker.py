@@ -496,16 +496,20 @@ def main():
                     print("No queued Vyntra render jobs", flush=True)
                     return
                 time.sleep(POLL_SECONDS); continue
+            stage = "prepare"
             try:
                 update_job(job["id"], status="processing", progress=0, worker_id=WORKER_ID)
                 with tempfile.TemporaryDirectory(prefix="vyntra-render-") as directory:
+                    stage = "render_and_verify"
                     output, metadata = render(job, Path(directory))
                     current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job["id"]) + "&select=status")
                     if current and current[0]["status"] == "cancel_requested":
                         raise InterruptedError("cancelled")
                     update_job(job["id"], status="finalizing", progress=96)
                     output_path = f'{job["owner_id"]}/exports/{job["id"]}.mp4'
+                    stage = "upload_output"
                     storage_upload(output, output_path)
+                    stage = "complete_job_record"
                     update_job(job["id"], status="completed", progress=100, output_path=output_path, output_metadata=metadata, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), error_code=None)
             except InterruptedError:
                 update_job(job["id"], status="cancelled", progress=0, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
@@ -513,7 +517,9 @@ def main():
                 message = str(exc)
                 raw_code = message.split(":",1)[0][:80] or "render_failed"
                 code = ffmpeg_error_code(message.partition(":")[2]) if raw_code == "ffmpeg_failed" else raw_code
-                print("job failed", job.get("id"), code, flush=True)
+                safe_message = safe_ffmpeg_diagnostic(message)
+                print("job failed", job.get("id"), "at", stage, type(exc).__name__, flush=True)
+                print("job error summary:", safe_message or "[no diagnostic output]", flush=True)
                 retryable = (
                     isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
                     or exc.__class__.__module__.startswith("requests.")
