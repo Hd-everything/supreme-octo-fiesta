@@ -1,6 +1,7 @@
 import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-only-not-a-secret")
@@ -19,6 +20,28 @@ class RenderLimitsTests(unittest.TestCase):
 
     def test_oneshot_is_off_by_default(self):
         self.assertFalse(worker.ONESHOT)
+
+
+class DispatchedJobClaimTests(unittest.TestCase):
+    def test_worker_claims_the_dispatched_job_instead_of_an_older_queued_job(self):
+        job_id = "12345678-1234-5678-1234-567812345678"
+        with patch.object(worker, "api") as api:
+            api.side_effect = [
+                [{"id": job_id, "status": "queued", "attempts": 0, "started_at": None}],
+                [{"id": job_id, "status": "processing", "attempts": 1}],
+            ]
+            claimed = worker.claim_render_job(job_id)
+
+        self.assertEqual(claimed["id"], job_id)
+        self.assertIn(f"id=eq.{job_id}", api.call_args_list[1].args[0])
+        self.assertIn("status=eq.queued", api.call_args_list[1].args[0])
+        self.assertEqual(api.call_args_list[1].args[1], "PATCH")
+        self.assertEqual(api.call_count, 2)
+
+    def test_worker_does_not_claim_an_unrelated_job_when_dispatched_job_is_missing(self):
+        with patch.object(worker, "api", return_value=[]) as api:
+            self.assertIsNone(worker.claim_render_job("12345678-1234-5678-1234-567812345678"))
+        self.assertEqual(api.call_count, 1)
 
 
 class CloudEditingFeatureTests(unittest.TestCase):
