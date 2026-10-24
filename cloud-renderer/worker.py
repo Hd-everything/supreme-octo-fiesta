@@ -13,6 +13,8 @@ BUCKET = os.getenv("VYNTRA_STORAGE_BUCKET", "vyntra-media")
 POLL_SECONDS = max(2, int(os.getenv("VYNTRA_POLL_SECONDS", "5")))
 MAX_DURATION = min(180, max(1, int(os.getenv("VYNTRA_MAX_DURATION_SECONDS", "180"))))
 MAX_INPUT_BYTES = min(50 * 1024 * 1024, max(1, int(os.getenv("VYNTRA_MAX_INPUT_BYTES", str(50 * 1024 * 1024)))))
+OUTPUT_PART_BYTES = 49 * 1024 * 1024
+MAX_OUTPUT_BYTES = 850 * 1024 * 1024
 TRIM_END_TOLERANCE_MS = 1000
 ONESHOT = os.getenv("VYNTRA_ONESHOT", "false").lower() == "true"
 ENABLE_8K = os.getenv("VYNTRA_ENABLE_8K", "false").lower() == "true"
@@ -117,6 +119,78 @@ def storage_upload(source: Path, object_path: str):
         raise requests.HTTPError(
             f"storage_upload_failed:http_{response.status_code}:{detail}", response=response
         )
+
+
+def storage_remove(object_paths: list[str]):
+    if object_paths:
+        api("/storage/v1/object/" + BUCKET, "DELETE", {"prefixes": object_paths})
+
+
+def job_output_paths(job) -> list[str]:
+    metadata = job.get("output_metadata")
+    chunks = metadata.get("chunks", []) if isinstance(metadata, dict) else []
+    paths = [chunk.get("path") for chunk in chunks if isinstance(chunk, dict)] if isinstance(chunks, list) else []
+    if job.get("output_path"):
+        paths.append(job["output_path"])
+    return list(dict.fromkeys(path for path in paths if isinstance(path, str) and path))
+
+
+def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[str, dict]:
+    total_bytes = source.stat().st_size
+    if total_bytes <= 0:
+        raise ValueError("empty_render_output")
+    if total_bytes > MAX_OUTPUT_BYTES:
+        raise ValueError("output_exceeds_free_storage_limit")
+    if total_bytes <= OUTPUT_PART_BYTES:
+        object_path = f'{job["owner_id"]}/exports/{job["id"]}.mp4'
+        try:
+            storage_upload(source, object_path)
+            output_metadata = {**metadata, "bytes": total_bytes}
+            update_job(job["id"], status="finalizing", progress=99,
+                       output_path=object_path, output_metadata=output_metadata)
+            current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job["id"]) + "&select=status")
+            if current and current[0]["status"] == "cancel_requested":
+                raise InterruptedError("cancelled")
+            return object_path, output_metadata
+        except Exception:
+            try:
+                storage_remove([object_path])
+                update_job(job["id"], output_path=None, output_metadata=None)
+            except Exception as cleanup_error:
+                print("partial output cleanup failed", type(cleanup_error).__name__, flush=True)
+            raise
+    part_count = (total_bytes + OUTPUT_PART_BYTES - 1) // OUTPUT_PART_BYTES
+    uploaded = []
+    try:
+        with source.open("rb") as rendered:
+            for index in range(part_count):
+                current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job["id"]) + "&select=status")
+                if current and current[0]["status"] == "cancel_requested":
+                    raise InterruptedError("cancelled")
+                data = rendered.read(OUTPUT_PART_BYTES)
+                if not data:
+                    raise RuntimeError("render_output_truncated")
+                part_path = work / f"output_part_{index:03d}.mp4"
+                part_path.write_bytes(data)
+                object_path = f'{job["owner_id"]}/exports/{job["id"]}.part{index:03d}'
+                storage_upload(part_path, object_path)
+                part_path.unlink(missing_ok=True)
+                uploaded.append({"path": object_path, "bytes": len(data)})
+                output_metadata = {**metadata, "bytes": total_bytes, "chunked": True, "chunks": uploaded.copy()}
+                progress = min(99, 96 + int(3 * len(uploaded) / part_count))
+                update_job(job["id"], status="finalizing", progress=progress,
+                           output_path=uploaded[0]["path"], output_metadata=output_metadata)
+        current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job["id"]) + "&select=status")
+        if current and current[0]["status"] == "cancel_requested":
+            raise InterruptedError("cancelled")
+        return uploaded[0]["path"], {**metadata, "bytes": total_bytes, "chunked": True, "chunks": uploaded}
+    except Exception:
+        try:
+            storage_remove([part["path"] for part in uploaded])
+            update_job(job["id"], output_path=None, output_metadata=None)
+        except Exception as cleanup_error:
+            print("partial output cleanup failed", type(cleanup_error).__name__, flush=True)
+        raise
 
 def probe(path: Path):
     raw = subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)], timeout=45)
@@ -504,6 +578,10 @@ def main():
             stage = "prepare"
             try:
                 update_job(job["id"], status="processing", progress=0, worker_id=WORKER_ID)
+                stale_output_paths = job_output_paths(job)
+                if stale_output_paths:
+                    storage_remove(stale_output_paths)
+                    update_job(job["id"], output_path=None, output_metadata=None)
                 with tempfile.TemporaryDirectory(prefix="vyntra-render-") as directory:
                     stage = "render_and_verify"
                     output, metadata = render(job, Path(directory))
@@ -511,9 +589,8 @@ def main():
                     if current and current[0]["status"] == "cancel_requested":
                         raise InterruptedError("cancelled")
                     update_job(job["id"], status="finalizing", progress=96)
-                    output_path = f'{job["owner_id"]}/exports/{job["id"]}.mp4'
-                    stage = "upload_output"
-                    storage_upload(output, output_path)
+                    stage = "upload_output_parts"
+                    output_path, metadata = upload_output_parts(output, job, metadata, Path(directory))
                     stage = "complete_job_record"
                     update_job(job["id"], status="completed", progress=100, output_path=output_path, output_metadata=metadata, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), error_code=None)
             except InterruptedError:

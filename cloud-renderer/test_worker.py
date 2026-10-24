@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -126,6 +127,115 @@ class FFmpegDiagnosticTests(unittest.TestCase):
         code = worker.ffmpeg_error_code("filter error: " + "x" * 400)
         self.assertTrue(code.startswith("ffmpeg_failed:"))
         self.assertLessEqual(len(code), 100)
+
+
+class OutputChunkTests(unittest.TestCase):
+    def test_small_output_stays_a_single_compatible_mp4_object(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "render.mp4"
+            source.write_bytes(b"mp4-data")
+            uploads = []
+            with patch.object(worker, "OUTPUT_PART_BYTES", 16), \
+                 patch.object(worker, "storage_upload", side_effect=lambda path, object_path: uploads.append((path.read_bytes(), object_path))), \
+                 patch.object(worker, "api", return_value=[{"status": "finalizing"}]), \
+                 patch.object(worker, "update_job"):
+                output_path, metadata = worker.upload_output_parts(
+                    source,
+                    {"id": "job-123", "owner_id": "owner-123"},
+                    {"width": 720},
+                    Path(directory),
+                )
+
+        self.assertEqual(uploads, [(b"mp4-data", "owner-123/exports/job-123.mp4")])
+        self.assertEqual(output_path, uploads[0][1])
+        self.assertNotIn("chunks", metadata)
+        self.assertEqual(metadata["bytes"], len(b"mp4-data"))
+
+    def test_output_is_uploaded_as_ordered_parts_that_reassemble_byte_for_byte(self):
+        original = bytes(range(19))
+        job = {"id": "job-123", "owner_id": "owner-123"}
+        uploaded = []
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "render.mp4"
+            source.write_bytes(original)
+
+            def capture_part(path, object_path):
+                uploaded.append((object_path, path.read_bytes()))
+
+            with patch.object(worker, "OUTPUT_PART_BYTES", 7), \
+                 patch.object(worker, "MAX_OUTPUT_BYTES", 100), \
+                 patch.object(worker, "storage_upload", side_effect=capture_part), \
+                 patch.object(worker, "api", return_value=[{"status": "finalizing"}]), \
+                 patch.object(worker, "update_job"):
+                first_path, metadata = worker.upload_output_parts(source, job, {"width": 1280}, Path(directory))
+
+        self.assertEqual([chunk for _, chunk in uploaded], [original[:7], original[7:14], original[14:]])
+        self.assertEqual(b"".join(chunk for _, chunk in uploaded), original)
+        self.assertEqual(first_path, uploaded[0][0])
+        self.assertEqual([item["path"] for item in metadata["chunks"]], [path for path, _ in uploaded])
+        self.assertEqual(metadata["bytes"], len(original))
+        self.assertTrue(metadata["chunked"])
+
+    def test_output_larger_than_free_storage_guard_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "render.mp4"
+            source.write_bytes(b"12345")
+            with patch.object(worker, "MAX_OUTPUT_BYTES", 4):
+                with self.assertRaisesRegex(ValueError, "output_exceeds_free_storage_limit"):
+                    worker.upload_output_parts(source, {"id": "id", "owner_id": "owner"}, {}, Path(directory))
+
+    def test_failed_part_upload_removes_already_uploaded_parts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "render.mp4"
+            source.write_bytes(bytes(range(12)))
+            uploaded = []
+
+            def fail_on_second_part(path, object_path):
+                if len(uploaded) == 1:
+                    raise RuntimeError("simulated_upload_failure")
+                uploaded.append(object_path)
+
+            with patch.object(worker, "OUTPUT_PART_BYTES", 4), \
+                 patch.object(worker, "MAX_OUTPUT_BYTES", 100), \
+                 patch.object(worker, "storage_upload", side_effect=fail_on_second_part), \
+                 patch.object(worker, "api", return_value=[{"status": "finalizing"}]), \
+                 patch.object(worker, "storage_remove") as remove, \
+                 patch.object(worker, "update_job") as update:
+                with self.assertRaisesRegex(RuntimeError, "simulated_upload_failure"):
+                    worker.upload_output_parts(
+                        source,
+                        {"id": "job-123", "owner_id": "owner-123"},
+                        {},
+                        Path(directory),
+                    )
+
+        remove.assert_called_once_with([uploaded[0]])
+        self.assertEqual(update.call_args.args[0], "job-123")
+        self.assertEqual(update.call_args.kwargs["output_path"], None)
+
+    def test_cancellation_during_part_upload_cleans_uploaded_parts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "render.mp4"
+            source.write_bytes(bytes(range(12)))
+            uploaded = []
+            with patch.object(worker, "OUTPUT_PART_BYTES", 4), \
+                 patch.object(worker, "MAX_OUTPUT_BYTES", 100), \
+                 patch.object(worker, "storage_upload", side_effect=lambda path, object_path: uploaded.append(object_path)), \
+                 patch.object(worker, "api", side_effect=[
+                     [{"status": "finalizing"}],
+                     [{"status": "cancel_requested"}],
+                 ]), \
+                 patch.object(worker, "storage_remove") as remove, \
+                 patch.object(worker, "update_job"):
+                with self.assertRaisesRegex(InterruptedError, "cancelled"):
+                    worker.upload_output_parts(
+                        source,
+                        {"id": "job-123", "owner_id": "owner-123"},
+                        {},
+                        Path(directory),
+                    )
+
+        remove.assert_called_once_with([uploaded[0]])
 
 
 class OutputDimensionsTests(unittest.TestCase):
