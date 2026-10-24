@@ -14,7 +14,7 @@ POLL_SECONDS = max(2, int(os.getenv("VYNTRA_POLL_SECONDS", "5")))
 MAX_DURATION = min(180, max(1, int(os.getenv("VYNTRA_MAX_DURATION_SECONDS", "180"))))
 MAX_INPUT_BYTES = min(50 * 1024 * 1024, max(1, int(os.getenv("VYNTRA_MAX_INPUT_BYTES", str(50 * 1024 * 1024)))))
 OUTPUT_PART_BYTES = 48_000_000
-MAX_OUTPUT_BYTES = 100_000_000
+MAX_OUTPUT_BYTES = max(OUTPUT_PART_BYTES, int(os.getenv("VYNTRA_MAX_OUTPUT_BYTES", "200000000")))
 TRIM_END_TOLERANCE_MS = 1000
 ONESHOT = os.getenv("VYNTRA_ONESHOT", "false").lower() == "true"
 ENABLE_8K = os.getenv("VYNTRA_ENABLE_8K", "false").lower() == "true"
@@ -104,13 +104,26 @@ def storage_download(object_path: str, destination: Path):
             if total > MAX_INPUT_BYTES: raise ValueError("input_too_large")
             out.write(chunk)
 
-def storage_upload(source: Path, object_path: str):
+def output_storage_config(job):
+    """Return the storage endpoint for this job's rendered output."""
+    snapshot = job.get("project_snapshot") if isinstance(job, dict) else None
+    if isinstance(snapshot, dict) and snapshot.get("vyntraOutputStore") == "secondary":
+        url = os.getenv("VYNTRA_OUTPUT_SUPABASE_URL", "").rstrip("/")
+        key = os.getenv("VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY", "")
+        if not url or not key:
+            raise ValueError("output_storage_not_configured")
+        return url, key, os.getenv("VYNTRA_OUTPUT_BUCKET", "vyntra-exports")
+    return SUPABASE_URL, SERVICE_KEY, BUCKET
+
+
+def storage_upload(source: Path, object_path: str, job=None):
     import requests
     # Stream the output from disk; do not load large rendered files into memory.
-    url = SUPABASE_URL + "/storage/v1/object/" + BUCKET + "/" + urllib.parse.quote(object_path, safe="/")
+    storage_url, storage_key, storage_bucket = output_storage_config(job or {})
+    url = storage_url + "/storage/v1/object/" + storage_bucket + "/" + urllib.parse.quote(object_path, safe="/")
     with source.open("rb") as stream:
         response = requests.post(url, data=stream, timeout=(30, 900), headers={
-            "apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}",
+            "apikey": storage_key, "Authorization": f"Bearer {storage_key}",
             "Content-Type": "video/mp4", "x-upsert": "true",
         })
     if not response.ok:
@@ -121,9 +134,19 @@ def storage_upload(source: Path, object_path: str):
         )
 
 
-def storage_remove(object_paths: list[str]):
-    if object_paths:
-        api("/storage/v1/object/" + BUCKET, "DELETE", {"prefixes": object_paths})
+def storage_remove(object_paths: list[str], job=None):
+    if not object_paths:
+        return
+    storage_url, storage_key, storage_bucket = output_storage_config(job or {})
+    payload = json.dumps({"prefixes": object_paths}).encode()
+    request = urllib.request.Request(
+        storage_url + "/storage/v1/object/" + storage_bucket,
+        data=payload,
+        headers={"apikey": storage_key, "Authorization": f"Bearer {storage_key}", "Content-Type": "application/json"},
+        method="DELETE",
+    )
+    with urllib.request.urlopen(request, timeout=90) as response:
+        response.read()
 
 
 def job_output_paths(job) -> list[str]:
@@ -144,7 +167,7 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
     if total_bytes <= OUTPUT_PART_BYTES:
         object_path = f'{job["owner_id"]}/exports/{job["id"]}.mp4'
         try:
-            storage_upload(source, object_path)
+            storage_upload(source, object_path, job)
             output_metadata = {**metadata, "bytes": total_bytes}
             update_job(job["id"], status="finalizing", progress=99,
                        output_path=object_path, output_metadata=output_metadata)
@@ -154,7 +177,7 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
             return object_path, output_metadata
         except Exception:
             try:
-                storage_remove([object_path])
+                storage_remove([object_path], job)
                 update_job(job["id"], output_path=None, output_metadata=None)
             except Exception as cleanup_error:
                 print("partial output cleanup failed", type(cleanup_error).__name__, flush=True)
@@ -173,7 +196,7 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
                 part_path = work / f"output_part_{index:03d}.mp4"
                 part_path.write_bytes(data)
                 object_path = f'{job["owner_id"]}/exports/{job["id"]}.part{index:03d}'
-                storage_upload(part_path, object_path)
+                storage_upload(part_path, object_path, job)
                 part_path.unlink(missing_ok=True)
                 uploaded.append({"path": object_path, "bytes": len(data)})
                 output_metadata = {**metadata, "bytes": total_bytes, "chunked": True, "chunks": uploaded.copy()}
@@ -186,7 +209,7 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
         return uploaded[0]["path"], {**metadata, "bytes": total_bytes, "chunked": True, "chunks": uploaded}
     except Exception:
         try:
-            storage_remove([part["path"] for part in uploaded])
+            storage_remove([part["path"] for part in uploaded], job)
             update_job(job["id"], output_path=None, output_metadata=None)
         except Exception as cleanup_error:
             print("partial output cleanup failed", type(cleanup_error).__name__, flush=True)
@@ -580,7 +603,7 @@ def main():
                 update_job(job["id"], status="processing", progress=0, worker_id=WORKER_ID)
                 stale_output_paths = job_output_paths(job)
                 if stale_output_paths:
-                    storage_remove(stale_output_paths)
+                    storage_remove(stale_output_paths, job)
                     update_job(job["id"], output_path=None, output_metadata=None)
                 with tempfile.TemporaryDirectory(prefix="vyntra-render-") as directory:
                     stage = "render_and_verify"

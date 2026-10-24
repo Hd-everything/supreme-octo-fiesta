@@ -62,6 +62,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           VYNTRA_STORAGE_BUCKET: vyntra-media
+          VYNTRA_OUTPUT_SUPABASE_URL: https://ektasvkqwlwnzwvbbofh.supabase.co
+          VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY }}
+          VYNTRA_OUTPUT_BUCKET: vyntra-exports
+          VYNTRA_MAX_OUTPUT_BYTES: "200000000"
           VYNTRA_ONESHOT: "true"
           VYNTRA_MAX_DURATION_SECONDS: "180"
           VYNTRA_MAX_INPUT_BYTES: "52428800"
@@ -77,6 +81,10 @@ jobs:
               exit 0
             fi
             echo "::error::Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY Actions secret."
+            exit 1
+          fi
+          if [[ -n "${VYNTRA_OUTPUT_SUPABASE_URL:-}" && -z "${VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY:-}" ]] || [[ -z "${VYNTRA_OUTPUT_SUPABASE_URL:-}" && -n "${VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY:-}" ]]; then
+            echo "::error::Configure both secondary output storage secrets, or leave both empty."
             exit 1
           fi
           test -x "$(command -v ffmpeg)"

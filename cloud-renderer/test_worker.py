@@ -136,7 +136,7 @@ class OutputChunkTests(unittest.TestCase):
             source.write_bytes(b"mp4-data")
             uploads = []
             with patch.object(worker, "OUTPUT_PART_BYTES", 16), \
-                 patch.object(worker, "storage_upload", side_effect=lambda path, object_path: uploads.append((path.read_bytes(), object_path))), \
+                 patch.object(worker, "storage_upload", side_effect=lambda path, object_path, job: uploads.append((path.read_bytes(), object_path))), \
                  patch.object(worker, "api", return_value=[{"status": "finalizing"}]), \
                  patch.object(worker, "update_job"):
                 output_path, metadata = worker.upload_output_parts(
@@ -159,7 +159,7 @@ class OutputChunkTests(unittest.TestCase):
             source = Path(directory) / "render.mp4"
             source.write_bytes(original)
 
-            def capture_part(path, object_path):
+            def capture_part(path, object_path, job):
                 uploaded.append((object_path, path.read_bytes()))
 
             with patch.object(worker, "OUTPUT_PART_BYTES", 7), \
@@ -190,7 +190,7 @@ class OutputChunkTests(unittest.TestCase):
             source.write_bytes(bytes(range(12)))
             uploaded = []
 
-            def fail_on_second_part(path, object_path):
+            def fail_on_second_part(path, object_path, job):
                 if len(uploaded) == 1:
                     raise RuntimeError("simulated_upload_failure")
                 uploaded.append(object_path)
@@ -209,7 +209,7 @@ class OutputChunkTests(unittest.TestCase):
                         Path(directory),
                     )
 
-        remove.assert_called_once_with([uploaded[0]])
+        remove.assert_called_once_with([uploaded[0]], {"id": "job-123", "owner_id": "owner-123"})
         self.assertEqual(update.call_args.args[0], "job-123")
         self.assertEqual(update.call_args.kwargs["output_path"], None)
 
@@ -220,7 +220,7 @@ class OutputChunkTests(unittest.TestCase):
             uploaded = []
             with patch.object(worker, "OUTPUT_PART_BYTES", 4), \
                  patch.object(worker, "MAX_OUTPUT_BYTES", 100), \
-                 patch.object(worker, "storage_upload", side_effect=lambda path, object_path: uploaded.append(object_path)), \
+                 patch.object(worker, "storage_upload", side_effect=lambda path, object_path, job: uploaded.append(object_path)), \
                  patch.object(worker, "api", side_effect=[
                      [{"status": "finalizing"}],
                      [{"status": "cancel_requested"}],
@@ -235,7 +235,7 @@ class OutputChunkTests(unittest.TestCase):
                         Path(directory),
                     )
 
-        remove.assert_called_once_with([uploaded[0]])
+        remove.assert_called_once_with([uploaded[0]], {"id": "job-123", "owner_id": "owner-123"})
 
 
 class OutputDimensionsTests(unittest.TestCase):
