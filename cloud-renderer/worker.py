@@ -12,6 +12,7 @@ BUCKET = os.getenv("VYNTRA_STORAGE_BUCKET", "vyntra-media")
 POLL_SECONDS = max(2, int(os.getenv("VYNTRA_POLL_SECONDS", "5")))
 MAX_DURATION = min(180, max(1, int(os.getenv("VYNTRA_MAX_DURATION_SECONDS", "180"))))
 MAX_INPUT_BYTES = min(50 * 1024 * 1024, max(1, int(os.getenv("VYNTRA_MAX_INPUT_BYTES", str(50 * 1024 * 1024)))))
+TRIM_END_TOLERANCE_MS = 1000
 ONESHOT = os.getenv("VYNTRA_ONESHOT", "false").lower() == "true"
 ENABLE_8K = os.getenv("VYNTRA_ENABLE_8K", "false").lower() == "true"
 MAX_JOBS = max(1, int(os.getenv("VYNTRA_MAX_CONCURRENT_JOBS", "1")))
@@ -66,6 +67,22 @@ def safe_number(value, low, high, name):
     except (TypeError, ValueError): raise ValueError("invalid_" + name)
     if number < low or number > high: raise ValueError("invalid_" + name)
     return number
+
+def clip_trim_range(clip, duration_seconds):
+    actual_duration_ms = duration_seconds * 1000
+    declared_duration_ms = safe_number(
+        clip.get("durationMs", int(actual_duration_ms)), 1, MAX_DURATION * 1000, "clip_duration"
+    )
+    start_ms = safe_number(clip.get("startMs", 0), 0, actual_duration_ms, "trim_start")
+    end_ms = safe_number(clip.get("endMs", int(actual_duration_ms)), 1, declared_duration_ms, "trim_end")
+    if end_ms > actual_duration_ms:
+        if end_ms - actual_duration_ms > TRIM_END_TOLERANCE_MS:
+            raise ValueError("invalid_trim_end")
+        end_ms = actual_duration_ms
+    start, end = start_ms / 1000, end_ms / 1000
+    if end <= start:
+        raise ValueError("invalid_trim_range")
+    return start, end
 
 def output_dimensions(source_width: int, source_height: int, rotation: int, aspect_ratio: str, resolution: str):
     edge = {"480p": 480, "540p": 540, "720p": 720, "1080p": 1080, "1440p": 1440, "1620p": 1620, "2160p": 2160, "2880p": 2880, "3456p": 3456, "4320p": 4320}.get(resolution)
@@ -134,8 +151,7 @@ def render(job, work: Path):
             duration = safe_number(clip.get("durationMs", 0), 1, MAX_DURATION * 1000, "image_duration") / 1000
         if duration <= 0 or duration > MAX_DURATION:
             raise ValueError("source_duration_limit")
-        start = safe_number(clip.get("startMs", 0), 0, duration * 1000, "trim_start") / 1000
-        end = safe_number(clip.get("endMs", int(duration * 1000)), 1, duration * 1000, "trim_end") / 1000
+        start, end = clip_trim_range(clip, duration)
         if end <= start or end - start > MAX_DURATION: raise ValueError("invalid_trim_range")
         speed = safe_number(clip.get("speed", 1.0), .25, 4.0, "speed")
         reverse = clip.get("reverse", False)
