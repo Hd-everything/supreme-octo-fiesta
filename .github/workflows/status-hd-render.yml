@@ -62,7 +62,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           VYNTRA_STORAGE_BUCKET: vyntra-media
-          VYNTRA_OUTPUT_SUPABASE_URL: ${{ secrets.VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY != '' && 'https://vfaakmxoeflzedwidlcl.supabase.co' || '' }}
+          VYNTRA_OUTPUT_SUPABASE_URL: https://vfaakmxoeflzedwidlcl.supabase.co
           VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY }}
           VYNTRA_OUTPUT_BUCKET: vyntra-exports
           VYNTRA_MAX_OUTPUT_BYTES: "200000000"
