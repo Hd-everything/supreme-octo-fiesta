@@ -13,7 +13,7 @@ BUCKET = os.getenv("VYNTRA_STORAGE_BUCKET", "vyntra-media")
 POLL_SECONDS = max(2, int(os.getenv("VYNTRA_POLL_SECONDS", "5")))
 MAX_DURATION = min(180, max(1, int(os.getenv("VYNTRA_MAX_DURATION_SECONDS", "180"))))
 MAX_INPUT_BYTES = min(50 * 1024 * 1024, max(1, int(os.getenv("VYNTRA_MAX_INPUT_BYTES", str(50 * 1024 * 1024)))))
-OUTPUT_PART_BYTES = 49 * 1024 * 1024
+OUTPUT_PART_BYTES = 48_000_000
 MAX_OUTPUT_BYTES = 850 * 1024 * 1024
 TRIM_END_TOLERANCE_MS = 1000
 ONESHOT = os.getenv("VYNTRA_ONESHOT", "false").lower() == "true"
