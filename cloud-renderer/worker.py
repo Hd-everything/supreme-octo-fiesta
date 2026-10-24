@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json, os, shutil, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
 from pathlib import Path
+import re
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SERVICE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -16,6 +17,35 @@ TRIM_END_TOLERANCE_MS = 1000
 ONESHOT = os.getenv("VYNTRA_ONESHOT", "false").lower() == "true"
 ENABLE_8K = os.getenv("VYNTRA_ENABLE_8K", "false").lower() == "true"
 MAX_JOBS = max(1, int(os.getenv("VYNTRA_MAX_CONCURRENT_JOBS", "1")))
+
+def safe_ffmpeg_diagnostic(stderr: str, work_dir: Path | None = None) -> str:
+    """Return a bounded FFmpeg diagnostic with secrets, URLs, and temp paths removed."""
+    text = stderr.replace("\x00", "")
+    if work_dir:
+        for work_path in {str(work_dir), str(work_dir).replace("\\", "/")}:
+            text = text.replace(work_path, "[render-workdir]")
+    text = re.sub(r"https?://\S+", "[url-redacted]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
+    text = re.sub(
+        r"(?i)\b(authorization|bearer|apikey|service[_ -]?role|access[_ -]?token|refresh[_ -]?token|password|secret)\b\s*[:=]?\s*[^\s,;]+",
+        r"\1=[redacted]", text,
+    )
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # FFmpeg often ends with the unhelpful "Conversion failed!"; keep the
+    # preceding filter/stream errors and omit that generic footer.
+    while lines and lines[-1].lower() == "conversion failed!":
+        lines.pop()
+    return " | ".join(line[-600:] for line in lines[-8:])[-3600:]
+
+
+def ffmpeg_error_code(diagnostic: str) -> str:
+    """Fit a useful, already-sanitized summary into the existing 100-char DB field."""
+    if not diagnostic:
+        return "ffmpeg_failed"
+    summary = diagnostic.split(" | ")[-1]
+    summary = re.sub(r"\s+", " ", summary).strip()
+    return ("ffmpeg_failed:" + summary)[:100]
 
 def api(path: str, method="GET", payload=None, headers=None, raw=False):
     data = payload if raw else (json.dumps(payload).encode() if payload is not None else None)
@@ -131,6 +161,34 @@ def output_dimensions(source_width: int, source_height: int, rotation: int, aspe
     return width, height
 
 
+def visual_effect_filters(effect: str, width: int, height: int) -> list[str]:
+    """Map editor effect IDs to FFmpeg filters; reject unknown IDs explicitly."""
+    filters = {
+        "none": [],
+        "flash": ["eq=brightness=0.10:enable='lt(mod(t,0.4),0.08)'"],
+        "shake": [f"crop=iw-24:ih-24:x=12+8*sin(2*PI*12*t):y=12+8*cos(2*PI*10*t),scale={width}:{height}"],
+        "blur": ["boxblur=4:1"],
+        "glitch": ["rgbashift=rh=8:bh=-8:enable='lt(mod(t,0.5),0.08)'"],
+        "phonk": ["eq=contrast=1.25:saturation=1.35"],
+        "grayscale": ["hue=s=0"],
+        "negative": ["negate"],
+        "soft": ["gblur=sigma=1.5"],
+        "cinematic": ["eq=brightness=0.015:contrast=1.13:saturation=1.08"],
+        "moody": ["eq=brightness=-0.06:contrast=1.20:saturation=0.97"],
+        "vivid": ["eq=brightness=0.025:contrast=1.20:saturation=1.20"],
+        "dramatic": ["eq=contrast=1.30:saturation=1.10"],
+        "vintage": ["colorbalance=rs=0.08:gs=0.02:bs=-0.05", "eq=saturation=0.85:contrast=0.92"],
+        "fade": ["eq=contrast=0.84:saturation=0.94:brightness=0.025"],
+        "night": ["eq=brightness=-0.10:contrast=1.08:saturation=0.90", "colorbalance=bs=0.08"],
+        "sunset": ["colorbalance=rs=0.08:gs=0.02:bs=-0.08", "eq=saturation=1.13"],
+        "noir": ["hue=s=0", "eq=contrast=1.25:brightness=-0.02"],
+        "dreamy": ["gblur=sigma=2", "eq=brightness=0.03:saturation=1.10"],
+    }
+    if effect not in filters:
+        raise ValueError("unsupported_effect")
+    return filters[effect]
+
+
 def render(job, work: Path):
     plan = job["project_snapshot"]
     clips = plan.get("clips")
@@ -217,30 +275,12 @@ def render(job, work: Path):
         reverse = clip.get("reverse", False)
         volume = safe_number(clip.get("volume", 1), 0, 1, "volume")
         effect = clip.get("effect", "none")
-        if effect not in ("none", "flash", "shake", "blur", "glitch", "phonk", "grayscale", "negative", "cinematic", "moody", "vivid", "dramatic", "vintage", "fade", "night", "sunset", "noir", "soft", "dreamy"):
-            raise ValueError("unsupported_effect")
+        effect_vf = visual_effect_filters(effect, width, height)
         if reverse: vf.append("reverse")
         frame_rate = int(safe_number(plan.get("exportFrameRate", 30), 24, 60, "frame_rate"))
         if frame_rate not in (24, 25, 30, 50, 60): raise ValueError("unsupported_frame_rate")
         vf += [f"scale={width}:{height}:force_original_aspect_ratio=increase", f"crop={width}:{height}", "setsar=1", f"fps={frame_rate}"]
-        if effect == "flash": vf.append("eq=brightness=0.10:enable='lt(mod(t,0.4),0.08)'")
-        elif effect == "shake": vf.append(f"crop=iw-24:ih-24:x=12+8*sin(2*PI*12*t):y=12+8*cos(2*PI*10*t),scale={width}:{height}")
-        elif effect == "blur": vf.append("boxblur=4:1")
-        elif effect == "glitch": vf.append("rgbashift=rh=8:bh=-8:enable='lt(mod(t,0.5),0.08)'")
-        elif effect == "phonk": vf.append("eq=contrast=1.25:saturation=1.35")
-        elif effect == "grayscale": vf.append("hue=s=0")
-        elif effect == "negative": vf.append("negate")
-        elif effect == "soft": vf.append("gblur=sigma=1.5")
-        elif effect == "cinematic": vf.append("eq=brightness=0.015:contrast=1.13:saturation=1.08")
-        elif effect == "moody": vf.append("eq=brightness=-0.06:contrast=1.20:saturation=0.97")
-        elif effect == "vivid": vf.append("eq=brightness=0.025:contrast=1.20:saturation=1.20")
-        elif effect == "dramatic": vf.append("eq=contrast=1.30:saturation=1.10")
-        elif effect == "vintage": vf.append("colorbalance=rs=0.08:gs=0.02:bs=-0.05,eq=saturation=0.85:contrast=0.92")
-        elif effect == "fade": vf.append("eq=contrast=0.84:saturation=0.94:brightness=0.025")
-        elif effect == "night": vf.append("eq=brightness=-0.10:contrast=1.08:saturation=0.90,colorbalance=bs=0.08")
-        elif effect == "sunset": vf.append("colorbalance=rs=0.08:gs=0.02:bs=-0.08,eq=saturation=1.13")
-        elif effect == "noir": vf.append("hue=s=0,eq=contrast=1.25:brightness=-0.02")
-        elif effect == "dreamy": vf.append("gblur=sigma=2,eq=brightness=0.03:saturation=1.10")
+        vf += effect_vf
         if speed != 1.0: vf.append(f"setpts=(PTS-STARTPTS)/{speed}")
         freeze_ms = safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")
         if freeze_ms: vf.append(f"tpad=stop_mode=clone:stop_duration={freeze_ms/1000:.6f}")
@@ -408,23 +448,31 @@ def render(job, work: Path):
     cmd = input_args + ["-filter_complex", ";".join(filters), "-map", video_label, "-map", audio_label] + encoder_args + [
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)]
     update_job(job["id"], status="processing", progress=1, started_at=job.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
-    duration_ms = int(sum(clip_lengths) * 1000)
-    while proc.poll() is None:
-        line = proc.stdout.readline() if proc.stdout else ""
-        if line.startswith("out_time_ms="):
-            try:
-                done = int(line.split("=", 1)[1].strip()) // 1000
-                progress = min(94, max(1, int(done * 94 / max(1, duration_ms))))
-                update_job(job["id"], progress=progress)
-            except ValueError: pass
-        # Worker restarts and cancellation are observed through the job record.
-        current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job["id"]) + "&select=status")
-        if current and current[0]["status"] == "cancel_requested":
-            proc.terminate(); proc.wait(timeout=10); raise InterruptedError("cancelled")
-        time.sleep(.1)
-    stderr = proc.stderr.read() if proc.stderr else ""
-    if proc.returncode != 0: raise RuntimeError("ffmpeg_failed:" + stderr[-1000:])
+    stderr_path = work / "ffmpeg.stderr"
+    with stderr_path.open("w+b") as stderr_file:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_file, text=True, bufsize=1)
+        duration_ms = int(sum(clip_lengths) * 1000)
+        while proc.poll() is None:
+            line = proc.stdout.readline() if proc.stdout else ""
+            if line.startswith("out_time_ms="):
+                try:
+                    done = int(line.split("=", 1)[1].strip()) // 1000
+                    progress = min(94, max(1, int(done * 94 / max(1, duration_ms))))
+                    update_job(job["id"], progress=progress)
+                except ValueError: pass
+            # Worker restarts and cancellation are observed through the job record.
+            current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job["id"]) + "&select=status")
+            if current and current[0]["status"] == "cancel_requested":
+                proc.terminate(); proc.wait(timeout=10); raise InterruptedError("cancelled")
+            time.sleep(.1)
+        stderr_file.flush()
+        stderr_file.seek(0)
+        stderr = stderr_file.read().decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        diagnostic = safe_ffmpeg_diagnostic(stderr, work)
+        print("FFmpeg failed with exit code", proc.returncode, flush=True)
+        print("FFmpeg diagnostic:", diagnostic or "[no diagnostic output]", flush=True)
+        raise RuntimeError("ffmpeg_failed:" + diagnostic)
     meta = probe(out)
     video = next((s for s in meta.get("streams", []) if s.get("codec_type") == "video"), None)
     if not video or int(video.get("width", 0)) != width or int(video.get("height", 0)) != height:
@@ -463,12 +511,13 @@ def main():
                 update_job(job["id"], status="cancelled", progress=0, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
             except Exception as exc:
                 message = str(exc)
-                code = message.split(":",1)[0][:80] or "render_failed"
+                raw_code = message.split(":",1)[0][:80] or "render_failed"
+                code = ffmpeg_error_code(message.partition(":")[2]) if raw_code == "ffmpeg_failed" else raw_code
                 print("job failed", job.get("id"), code, flush=True)
                 retryable = (
                     isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
                     or exc.__class__.__module__.startswith("requests.")
-                    or code == "ffmpeg_failed"
+                    or raw_code == "ffmpeg_failed"
                 )
                 if int(job.get("attempts", 0)) < 3 and retryable:
                     update_job(job["id"], status="queued", error_code=code, progress=0)

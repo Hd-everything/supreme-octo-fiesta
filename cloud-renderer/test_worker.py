@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -69,6 +71,61 @@ class CloudEditingFeatureTests(unittest.TestCase):
         self.assertIn("acompressor=threshold=0.125", source)
         self.assertIn("loudnorm=I=-16", source)
         self.assertIn("highpass=f=", source)
+
+    def test_each_editor_effect_has_a_worker_filter_mapping(self):
+        effects = (
+            "none", "flash", "shake", "blur", "glitch", "phonk", "grayscale",
+            "negative", "cinematic", "moody", "vivid", "dramatic", "vintage",
+            "fade", "night", "sunset", "noir", "soft", "dreamy",
+        )
+        for effect in effects:
+            with self.subTest(effect=effect):
+                worker.visual_effect_filters(effect, 320, 180)
+        with self.assertRaisesRegex(ValueError, "unsupported_effect"):
+            worker.visual_effect_filters("not-an-editor-effect", 320, 180)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is installed in the worker workflow")
+    def test_each_editor_effect_executes_on_a_real_ffmpeg_filter_graph(self):
+        effects = (
+            "none", "flash", "shake", "blur", "glitch", "phonk", "grayscale",
+            "negative", "cinematic", "moody", "vivid", "dramatic", "vintage",
+            "fade", "night", "sunset", "noir", "soft", "dreamy",
+        )
+        for effect in effects:
+            with self.subTest(effect=effect):
+                filters = worker.visual_effect_filters(effect, 320, 180)
+                command = [
+                    "ffmpeg", "-hide_banner", "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=320x180:rate=30:duration=0.2",
+                ]
+                if filters:
+                    command += ["-vf", ",".join(filters)]
+                command += ["-frames:v", "4", "-f", "null", "-"]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class FFmpegDiagnosticTests(unittest.TestCase):
+    def test_diagnostic_redacts_credentials_urls_and_work_directory(self):
+        work = Path("/tmp/vyntra-render-test")
+        diagnostic = worker.safe_ffmpeg_diagnostic(
+            "[Parsed_scale_0] Failed at /tmp/vyntra-render-test/clip_0.media "
+            "Authorization: Bearer abc123 https://example.test/signed?token=secret\n"
+            "Conversion failed!",
+            work,
+        )
+        self.assertIn("Failed", diagnostic)
+        self.assertIn("[render-workdir]", diagnostic)
+        self.assertIn("[redacted]", diagnostic)
+        self.assertIn("[url-redacted]", diagnostic)
+        self.assertNotIn("abc123", diagnostic)
+        self.assertNotIn("token=secret", diagnostic)
+        self.assertNotIn("Conversion failed!", diagnostic)
+
+    def test_database_error_summary_respects_existing_column_limit(self):
+        code = worker.ffmpeg_error_code("filter error: " + "x" * 400)
+        self.assertTrue(code.startswith("ffmpeg_failed:"))
+        self.assertLessEqual(len(code), 100)
 
 
 class OutputDimensionsTests(unittest.TestCase):
