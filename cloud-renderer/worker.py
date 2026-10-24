@@ -33,6 +33,31 @@ def update_job(job_id, **values):
     api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job_id),
         "PATCH", values, {"Prefer": "return=minimal"})
 
+def claim_render_job(target_job_id=None):
+    if target_job_id:
+        try:
+            target_job_id = str(uuid.UUID(target_job_id))
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("invalid_dispatched_job_id")
+        current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(target_job_id) + "&select=id,status,attempts,started_at")
+        if not current or current[0].get("status") != "queued":
+            return None
+        row = current[0]
+        if int(row.get("attempts", 0)) >= 3:
+            return None
+        started_at = row.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        claimed = api(
+            "/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(target_job_id) + "&status=eq.queued",
+            "PATCH",
+            {"status": "processing", "progress": 0, "worker_id": WORKER_ID,
+             "started_at": started_at, "attempts": int(row.get("attempts", 0)) + 1,
+             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+            {"Prefer": "return=representation"},
+        )
+        return claimed[0] if claimed else None
+    claimed = api("/rest/v1/rpc/vyntra_claim_render_job", "POST", {"p_worker_id": WORKER_ID})
+    return claimed[0] if isinstance(claimed, list) and claimed else None
+
 def storage_download(object_path: str, destination: Path):
     if not object_path or object_path.startswith("/") or ".." in Path(object_path).parts:
         raise ValueError("invalid_media_path")
@@ -355,9 +380,11 @@ def render(job, work: Path):
         font_size = int(safe_number(overlay.get("fontSize", 34), 16, 96, "font_size"))
         x = safe_number(overlay.get("x", 0), -1, 1, "overlay_x")
         y = safe_number(overlay.get("y", .55), -1, 1, "overlay_y")
-        color = int(overlay.get("color", 0xFFFFFFFF)) & 0xFFFFFF
+        argb = int(overlay.get("color", 0xFFFFFFFF))
+        color = argb & 0xFFFFFF
+        alpha = ((argb >> 24) & 0xFF) / 255 if argb > 0xFFFFFF else 1.0
         next_label = f"[vt{i}]"
-        filters.append(f"{video_label}drawtext=textfile='{text_file}':fontsize={font_size}:fontcolor=0x{color:06X}:x=(w-text_w)/2+({x})*w/2:y=(h-text_h)/2+({y})*h/2:enable='between(t,{start},{end})'{next_label}")
+        filters.append(f"{video_label}drawtext=textfile='{text_file}':fontsize={font_size}:fontcolor=0x{color:06X}@{alpha:.3f}:x=(w-text_w)/2+({x})*w/2:y=(h-text_h)/2+({y})*h/2:enable='between(t,{start},{end})'{next_label}")
         video_label = next_label
 
     for i, (image_index, overlay) in enumerate(image_inputs):
@@ -371,9 +398,14 @@ def render(job, work: Path):
         filters.append(f"{video_label}[img{i}]overlay=x=(W-w)/2+({x})*W/2:y=(H-h)/2+({y})*H/2:enable='between(t,{start},{end})':eof_action=pass{next_label}")
         video_label = next_label
     out = work / "render.mp4"
-    cmd = input_args + ["-filter_complex", ";".join(filters), "-map", video_label, "-map", audio_label,
-        "-c:v", "libx264" if codec == "h264" else "libx265", "-preset", "veryfast",
-        "-crf", str(int(safe_number(job.get("quality", 23), 18, 32, "quality"))),
+    bitrate = plan.get("exportBitrateKbps")
+    encoder_args = ["-c:v", "libx264" if codec == "h264" else "libx265", "-preset", "veryfast"]
+    if bitrate is None:
+        encoder_args += ["-crf", str(int(safe_number(job.get("quality", 23), 18, 32, "quality")))]
+    else:
+        bitrate = int(safe_number(bitrate, 1000, 80000, "bitrate"))
+        encoder_args += ["-b:v", f"{bitrate}k", "-maxrate", f"{int(bitrate * 1.25)}k", "-bufsize", f"{bitrate * 2}k"]
+    cmd = input_args + ["-filter_complex", ";".join(filters), "-map", video_label, "-map", audio_label] + encoder_args + [
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)]
     update_job(job["id"], status="processing", progress=1, started_at=job.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
@@ -409,8 +441,8 @@ def main():
     print("Vyntra worker ready", WORKER_ID, flush=True)
     while True:
         try:
-            claimed = api("/rest/v1/rpc/vyntra_claim_render_job", "POST", {"p_worker_id": WORKER_ID})
-            job = claimed[0] if isinstance(claimed, list) and claimed else None
+            target_job_id = os.getenv("VYNTRA_TARGET_JOB_ID") if ONESHOT else None
+            job = claim_render_job(target_job_id)
             if not job:
                 if ONESHOT:
                     print("No queued Vyntra render jobs", flush=True)

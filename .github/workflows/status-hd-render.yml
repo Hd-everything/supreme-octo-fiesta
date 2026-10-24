@@ -68,6 +68,7 @@ jobs:
           VYNTRA_MAX_INPUT_BYTES: "52428800"
           VYNTRA_ENABLE_8K: "false"
           VYNTRA_WORKER_ID: github-actions-${{ github.run_id }}-${{ github.run_attempt }}
+          VYNTRA_TARGET_JOB_ID: ${{ github.event.client_payload.job_id }}
         shell: bash
         run: |
           set -Eeuo pipefail
