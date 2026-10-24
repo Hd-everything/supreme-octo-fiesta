@@ -75,7 +75,10 @@ def clip_trim_range(clip, duration_seconds):
     )
     start_ms = safe_number(clip.get("startMs", 0), 0, actual_duration_ms, "trim_start")
     end_ms = safe_number(clip.get("endMs", int(actual_duration_ms)), 1, declared_duration_ms, "trim_end")
-    if end_ms > actual_duration_ms:
+    is_full_source_end = abs(end_ms - declared_duration_ms) <= 1
+    if is_full_source_end:
+        end_ms = actual_duration_ms
+    elif end_ms > actual_duration_ms:
         if end_ms - actual_duration_ms > TRIM_END_TOLERANCE_MS:
             raise ValueError("invalid_trim_end")
         end_ms = actual_duration_ms
