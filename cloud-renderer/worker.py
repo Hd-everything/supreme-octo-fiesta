@@ -13,9 +13,11 @@ BUCKET = os.getenv("VYNTRA_STORAGE_BUCKET", "vyntra-media")
 POLL_SECONDS = max(2, int(os.getenv("VYNTRA_POLL_SECONDS", "5")))
 MAX_DURATION = min(180, max(1, int(os.getenv("VYNTRA_MAX_DURATION_SECONDS", "180"))))
 MAX_INPUT_BYTES = min(50 * 1024 * 1024, max(1, int(os.getenv("VYNTRA_MAX_INPUT_BYTES", str(50 * 1024 * 1024)))))
+SOURCE_PART_BYTES = 48_000_000
+MAX_SOURCE_FILE_BYTES = 200 * 1024 * 1024
+MAX_PROJECT_SOURCE_BYTES = 200 * 1024 * 1024
 OUTPUT_PART_BYTES = 48_000_000
 MAX_OUTPUT_BYTES = max(OUTPUT_PART_BYTES, int(os.getenv("VYNTRA_MAX_OUTPUT_BYTES", "200000000")))
-TRIM_END_TOLERANCE_MS = 1000
 ONESHOT = os.getenv("VYNTRA_ONESHOT", "false").lower() == "true"
 ENABLE_8K = os.getenv("VYNTRA_ENABLE_8K", "false").lower() == "true"
 MAX_JOBS = max(1, int(os.getenv("VYNTRA_MAX_CONCURRENT_JOBS", "1")))
@@ -104,6 +106,71 @@ def storage_download(object_path: str, destination: Path):
             if total > MAX_INPUT_BYTES: raise ValueError("input_too_large")
             out.write(chunk)
 
+def download_source_asset(object_path: str, parts, owner_id: str, destination: Path):
+    """Download a normal source object or reconstruct a byte-split upload."""
+    if not isinstance(object_path, str) or not object_path.startswith(owner_id + "/"):
+        raise ValueError("media_not_owned")
+    if parts is None:
+        storage_download(object_path, destination)
+        if destination.stat().st_size > MAX_SOURCE_FILE_BYTES:
+            raise ValueError("source_file_too_large")
+        return
+    if not isinstance(parts, list) or not 2 <= len(parts) <= 6:
+        raise ValueError("invalid_source_parts")
+    if any(not isinstance(part, dict) for part in parts):
+        raise ValueError("invalid_source_parts")
+    if parts[0].get("path") != object_path:
+        raise ValueError("invalid_source_parts")
+    total = 0
+    destination.unlink(missing_ok=True)
+    try:
+        for index, part in enumerate(parts):
+            if not isinstance(part, dict):
+                raise ValueError("invalid_source_parts")
+            part_path = part.get("path")
+            expected_bytes = part.get("bytes")
+            if (not isinstance(part_path, str) or not part_path.startswith(owner_id + "/") or
+                    not isinstance(expected_bytes, int) or expected_bytes < 1 or expected_bytes > SOURCE_PART_BYTES):
+                raise ValueError("invalid_source_parts")
+            total += expected_bytes
+            if total > MAX_SOURCE_FILE_BYTES:
+                raise ValueError("source_file_too_large")
+            temp_part = destination.with_name(destination.name + f".part{index:03d}")
+            storage_download(part_path, temp_part)
+            actual_bytes = temp_part.stat().st_size
+            if actual_bytes != expected_bytes:
+                raise ValueError("source_part_size_mismatch")
+            with temp_part.open("rb") as incoming, destination.open("ab") as assembled:
+                shutil.copyfileobj(incoming, assembled, 1024 * 1024)
+            temp_part.unlink(missing_ok=True)
+        if destination.stat().st_size != total:
+            raise ValueError("source_reassembly_size_mismatch")
+    except Exception:
+        destination.unlink(missing_ok=True)
+        for index in range(len(parts)):
+            destination.with_name(destination.name + f".part{index:03d}").unlink(missing_ok=True)
+        raise
+
+def validate_source_manifest(plan, owner_id: str):
+    manifest = plan.get("uploadedSourceParts")
+    if manifest is None:
+        return
+    if not isinstance(manifest, list) or len(manifest) > 128:
+        raise ValueError("invalid_source_parts")
+    sizes = {}
+    for part in manifest:
+        if not isinstance(part, dict):
+            raise ValueError("invalid_source_parts")
+        path, size = part.get("path"), part.get("bytes")
+        if (not isinstance(path, str) or not path.startswith(owner_id + "/") or
+                not isinstance(size, int) or size < 1 or size > SOURCE_PART_BYTES):
+            raise ValueError("invalid_source_parts")
+        if path in sizes and sizes[path] != size:
+            raise ValueError("source_part_size_mismatch")
+        sizes[path] = size
+    if sum(sizes.values()) > MAX_PROJECT_SOURCE_BYTES:
+        raise ValueError("project_source_size_limit")
+
 def output_storage_config(job):
     """Return the storage endpoint for this job's rendered output."""
     snapshot = job.get("project_snapshot") if isinstance(job, dict) else None
@@ -164,6 +231,9 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
         raise ValueError("empty_render_output")
     if total_bytes > MAX_OUTPUT_BYTES:
         raise ValueError("output_exceeds_free_storage_limit")
+    snapshot = job.get("project_snapshot") if isinstance(job, dict) else None
+    storage_target = "secondary" if isinstance(snapshot, dict) and snapshot.get("vyntraOutputStore") == "secondary" else "primary"
+    print(f"uploading {total_bytes} output bytes to {storage_target} storage", flush=True)
     if total_bytes <= OUTPUT_PART_BYTES:
         object_path = f'{job["owner_id"]}/exports/{job["id"]}.mp4'
         try:
@@ -226,19 +296,17 @@ def safe_number(value, low, high, name):
     return number
 
 def clip_trim_range(clip, duration_seconds):
+    # The editor saves duration from the platform player, while FFprobe reads
+    # the decoded container duration. Treat FFprobe as authoritative and clamp
+    # a saved end to that duration instead of rejecting a valid trim because
+    # those metadata sources differ.
     actual_duration_ms = duration_seconds * 1000
     declared_duration_ms = safe_number(
         clip.get("durationMs", int(actual_duration_ms)), 1, MAX_DURATION * 1000, "clip_duration"
     )
     start_ms = safe_number(clip.get("startMs", 0), 0, actual_duration_ms, "trim_start")
-    end_ms = safe_number(clip.get("endMs", int(actual_duration_ms)), 1, declared_duration_ms, "trim_end")
-    is_full_source_end = abs(end_ms - declared_duration_ms) <= 1
-    if is_full_source_end:
-        end_ms = actual_duration_ms
-    elif end_ms > actual_duration_ms:
-        if end_ms - actual_duration_ms > TRIM_END_TOLERANCE_MS:
-            raise ValueError("invalid_trim_end")
-        end_ms = actual_duration_ms
+    requested_end_ms = safe_number(clip.get("endMs", int(actual_duration_ms)), 1, declared_duration_ms, "trim_end")
+    end_ms = min(requested_end_ms, actual_duration_ms)
     start, end = start_ms / 1000, end_ms / 1000
     if end <= start:
         raise ValueError("invalid_trim_range")
@@ -293,6 +361,7 @@ def visual_effect_filters(effect: str, width: int, height: int) -> list[str]:
 
 def render(job, work: Path):
     plan = job["project_snapshot"]
+    validate_source_manifest(plan, job["owner_id"])
     clips = plan.get("clips")
     if not isinstance(clips, list) or not 1 <= len(clips) <= 24:
         raise ValueError("unsupported_project_clip_count")
@@ -327,7 +396,7 @@ def render(job, work: Path):
         if not key.startswith(job["owner_id"] + "/"):
             raise ValueError("media_not_owned")
         path = work / f"clip_{i}.media"
-        storage_download(key, path)
+        download_source_asset(key, clip.get("sourceParts"), job["owner_id"], path)
         meta = probe(path)
         v = next((s for s in meta.get("streams", []) if s.get("codec_type") == "video"), None)
         if not v: raise ValueError("source_has_no_video")
@@ -356,7 +425,7 @@ def render(job, work: Path):
     if music:
         if not music.startswith(job["owner_id"] + "/"): raise ValueError("media_not_owned")
         music_path = work / "music.media"
-        storage_download(music, music_path)
+        download_source_asset(music, plan.get("musicSourceParts"), job["owner_id"], music_path)
         input_args += ["-i", str(music_path)]
 
     first = probe_info[0][0]
@@ -506,7 +575,7 @@ def render(job, work: Path):
         suffix = Path(key).suffix.lower()
         if suffix not in (".png", ".jpg", ".jpeg", ".webp"): raise ValueError("unsupported_image_format")
         image_path = work / f"overlay_{image_index}{suffix}"
-        storage_download(key, image_path)
+        download_source_asset(key, overlay.get("sourceParts"), job["owner_id"], image_path)
         input_args += ["-loop", "1", "-i", str(image_path)]
         image_inputs.append((len(clips) + (1 if music_path else 0) + image_index, overlay))
 
@@ -600,6 +669,9 @@ def main():
                 time.sleep(POLL_SECONDS); continue
             stage = "prepare"
             try:
+                storage_url, _, storage_bucket = output_storage_config(job)
+                output_route = "secondary" if storage_url != SUPABASE_URL else "primary"
+                print(f"job output route: {output_route} ({storage_bucket})", flush=True)
                 update_job(job["id"], status="processing", progress=0, worker_id=WORKER_ID)
                 stale_output_paths = job_output_paths(job)
                 if stale_output_paths:
