@@ -68,7 +68,7 @@ def safe_number(value, low, high, name):
     return number
 
 def output_dimensions(source_width: int, source_height: int, rotation: int, aspect_ratio: str, resolution: str):
-    edge = {"720p": 720, "1080p": 1080, "1440p": 1440, "2160p": 2160, "2880p": 2880, "3456p": 3456, "4320p": 4320}.get(resolution)
+    edge = {"480p": 480, "540p": 540, "720p": 720, "1080p": 1080, "1440p": 1440, "1620p": 1620, "2160p": 2160, "2880p": 2880, "3456p": 3456, "4320p": 4320}.get(resolution)
     if edge is None: raise ValueError("unsupported_resolution")
     ratios = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0, "4:5": 4 / 5, "3:4": 3 / 4, "4:3": 4 / 3, "21:9": 21 / 9}
     if aspect_ratio == "Original":
@@ -79,11 +79,9 @@ def output_dimensions(source_width: int, source_height: int, rotation: int, aspe
     else:
         raise ValueError("invalid_aspect_ratio")
     if target_ratio >= 1:
-        width, height = round(edge * target_ratio), edge
+        width, height = round(edge * target_ratio / 2) * 2, edge
     else:
-        width, height = edge, round(edge / target_ratio)
-    width -= width % 2
-    height -= height % 2
+        width, height = edge, round(edge / target_ratio / 2) * 2
     if width * height > 7680 * 4320: raise ValueError("output_dimensions_too_large")
     return width, height
 
@@ -94,7 +92,7 @@ def render(job, work: Path):
     if not isinstance(clips, list) or not 1 <= len(clips) <= 24:
         raise ValueError("unsupported_project_clip_count")
     resolution = job["resolution"]
-    edge = {"720p": 720, "1080p": 1080, "1440p": 1440, "2160p": 2160, "2880p": 2880, "3456p": 3456, "4320p": 4320}.get(resolution)
+    edge = {"480p": 480, "540p": 540, "720p": 720, "1080p": 1080, "1440p": 1440, "1620p": 1620, "2160p": 2160, "2880p": 2880, "3456p": 3456, "4320p": 4320}.get(resolution)
     if edge is None: raise ValueError("unsupported_resolution")
     if resolution in ("2880p", "3456p", "4320p"):
         try:

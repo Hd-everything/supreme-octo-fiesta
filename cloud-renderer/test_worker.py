@@ -49,6 +49,15 @@ class CloudEditingFeatureTests(unittest.TestCase):
 
 
 class OutputDimensionsTests(unittest.TestCase):
+    def test_free_sd_and_hd_resolutions(self):
+        self.assertEqual(worker.output_dimensions(1920, 1080, 0, "16:9", "480p"), (854, 480))
+        self.assertEqual(worker.output_dimensions(1920, 1080, 0, "16:9", "540p"), (960, 540))
+        self.assertEqual(worker.output_dimensions(1920, 1080, 0, "16:9", "720p"), (1280, 720))
+
+    def test_ad_supported_2k_and_3k_output_resolutions(self):
+        self.assertEqual(worker.output_dimensions(1920, 1080, 0, "16:9", "1440p"), (2560, 1440))
+        self.assertEqual(worker.output_dimensions(1920, 1080, 0, "16:9", "1620p"), (2880, 1620))
+
     def test_landscape_4k_is_exact_uhd(self):
         self.assertEqual(worker.output_dimensions(1920, 1080, 0, "16:9", "2160p"), (3840, 2160))
 
