@@ -111,7 +111,12 @@ def storage_upload(source: Path, object_path: str):
             "apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}",
             "Content-Type": "video/mp4", "x-upsert": "true",
         })
-    response.raise_for_status()
+    if not response.ok:
+        diagnostic = safe_ffmpeg_diagnostic(response.text)
+        detail = diagnostic or response.reason or "no response details"
+        raise requests.HTTPError(
+            f"storage_upload_failed:http_{response.status_code}:{detail}", response=response
+        )
 
 def probe(path: Path):
     raw = subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)], timeout=45)
@@ -516,13 +521,20 @@ def main():
             except Exception as exc:
                 message = str(exc)
                 raw_code = message.split(":",1)[0][:80] or "render_failed"
-                code = ffmpeg_error_code(message.partition(":")[2]) if raw_code == "ffmpeg_failed" else raw_code
+                if raw_code == "ffmpeg_failed":
+                    code = ffmpeg_error_code(message.partition(":")[2])
+                elif raw_code == "storage_upload_failed":
+                    code = ("storage_upload_failed:" + ":".join(message.split(":")[1:]))[:100]
+                else:
+                    code = raw_code
                 safe_message = safe_ffmpeg_diagnostic(message)
                 print("job failed", job.get("id"), "at", stage, type(exc).__name__, flush=True)
                 print("job error summary:", safe_message or "[no diagnostic output]", flush=True)
+                http_status = getattr(getattr(exc, "response", None), "status_code", None)
+                http_status_is_transient = http_status is None or http_status >= 500 or http_status == 429
                 retryable = (
                     isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
-                    or exc.__class__.__module__.startswith("requests.")
+                    or (exc.__class__.__module__.startswith("requests.") and http_status_is_transient)
                     or raw_code == "ffmpeg_failed"
                 )
                 if int(job.get("attempts", 0)) < 3 and retryable:
