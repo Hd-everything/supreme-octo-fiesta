@@ -508,6 +508,7 @@ def render(job, work: Path):
         brightness = safe_number(clip.get("brightness", 0), -.25, .25, "brightness")
         contrast = 1 + safe_number(clip.get("contrast", 0), -.3, .3, "contrast")
         saturation = 1 + safe_number(clip.get("saturation", 0), -20, 30, "saturation") / 100
+        sharpness = safe_number(clip.get("sharpness", 0), 0, .5, "sharpness")
         keyframes = clip.get("keyframes", [])
         if not isinstance(keyframes, list) or len(keyframes) > 100:
             raise ValueError("invalid_keyframes")
@@ -536,6 +537,8 @@ def render(job, work: Path):
             vf.append(f"eq=eval=frame:brightness='{keyframe_expr(1, brightness)}':contrast='{keyframe_expr(2, contrast)}':saturation='{keyframe_expr(3, saturation)}'")
         elif brightness or contrast != 1 or saturation != 1:
             vf.append(f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}")
+        if sharpness > 0:
+            vf.append(f"unsharp=5:5:{sharpness:.3f}:5:5:0")
         filters.append(f"[{i}:v]{','.join(vf)},format=yuv420p,setpts=PTS-STARTPTS[v{i}]")
         video_labels.append(f"[v{i}]")
         if has_audio:
@@ -638,14 +641,15 @@ def render(job, work: Path):
         text_file.write_text(text, encoding="utf-8")
         start = safe_number(overlay.get("startMs", 0), 0, MAX_DURATION*1000, "overlay_start") / 1000
         end = safe_number(overlay.get("endMs", 1000), start*1000+1, MAX_DURATION*1000, "overlay_end") / 1000
-        font_size = int(safe_number(overlay.get("fontSize", 34), 16, 96, "font_size"))
+        font_size = int(safe_number(overlay.get("fontSize", 34), 16, 160, "font_size"))
         x = safe_number(overlay.get("x", 0), -1, 1, "overlay_x")
         y = safe_number(overlay.get("y", .55), -1, 1, "overlay_y")
         argb = int(overlay.get("color", 0xFFFFFFFF))
         color = argb & 0xFFFFFF
         alpha = ((argb >> 24) & 0xFF) / 255 if argb > 0xFFFFFF else 1.0
         next_label = f"[vt{i}]"
-        filters.append(f"{video_label}drawtext=textfile='{text_file}':fontsize={font_size}:fontcolor=0x{color:06X}@{alpha:.3f}:x=(w-text_w)/2+({x})*w/2:y=(h-text_h)/2+({y})*h/2:enable='between(t,{start},{end})'{next_label}")
+        border_width = max(2, round(font_size * .035))
+        filters.append(f"{video_label}drawtext=textfile='{text_file}':fontsize={font_size}:fontcolor=0x{color:06X}@{alpha:.3f}:borderw={border_width}:bordercolor=black@0.82:x=(w-text_w)/2+({x})*w/2:y=(h-text_h)/2+({y})*h/2:enable='between(t,{start},{end})'{next_label}")
         video_label = next_label
 
     for i, (image_index, overlay) in enumerate(image_inputs):
