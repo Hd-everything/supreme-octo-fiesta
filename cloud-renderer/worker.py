@@ -375,6 +375,53 @@ def safe_number(value, low, high, name):
     if number < low or number > high: raise ValueError("invalid_" + name)
     return number
 
+def clip_speed_segments(clip, source_ms):
+    points = clip.get("speedCurve", [])
+    if not isinstance(points, list) or len(points) > 12:
+        raise ValueError("invalid_speed_curve")
+    segments = []
+    cursor = 0
+    current_speed = safe_number(clip.get("speed", 1.0), .25, 4.0, "speed")
+    previous_point = -1
+    for point in points:
+        if not isinstance(point, dict): raise ValueError("invalid_speed_curve_point")
+        raw_at = safe_number(point.get("timeMs", -1), 0, max(0, source_ms - 1), "speed_curve_time")
+        if not raw_at.is_integer(): raise ValueError("invalid_speed_curve_time")
+        at = int(raw_at)
+        next_speed = safe_number(point.get("speed", current_speed), .25, 4.0, "speed_curve_speed")
+        if at <= previous_point: raise ValueError("invalid_speed_curve_order")
+        if at > cursor: segments.append((cursor / 1000, at / 1000, current_speed))
+        cursor = at
+        current_speed = next_speed
+        previous_point = at
+    if cursor < source_ms: segments.append((cursor / 1000, source_ms / 1000, current_speed))
+    return segments or [(0, source_ms / 1000, current_speed)]
+
+def speed_curve_duration(segments):
+    return sum((end - start) / speed for start, end, speed in segments)
+
+def speed_curve_setpts(segments):
+    """Map source-time into the cumulative piecewise-constant curve time."""
+    elapsed = 0.0
+    expression = ""
+    for index, (start, end, speed) in enumerate(segments):
+        value = f"({elapsed:.9f}+((PTS-STARTPTS)*TB-{start:.9f})/{speed:.9f})/TB"
+        if index == len(segments) - 1:
+            expression = value
+        else:
+            expression = f"if(lt((PTS-STARTPTS)*TB\\,{end:.9f})\\,{value}\\,{expression})"
+        elapsed += (end - start) / speed
+    return f"setpts='{expression}'"
+
+def atempo_chain(speed):
+    filters = []
+    while speed > 2.0:
+        filters.append("atempo=2.0"); speed /= 2.0
+    while speed < .5:
+        filters.append("atempo=0.5"); speed /= .5
+    filters.append(f"atempo={speed:.6f}")
+    return filters
+
 def clip_trim_range(clip, duration_seconds):
     # The editor saves duration from the platform player, while FFprobe reads
     # the decoded container duration. Treat FFprobe as authoritative and clamp
@@ -469,6 +516,7 @@ def render(job, work: Path):
 
     local = []
     clip_lengths = []
+    trim_ranges = []
     input_args = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-loglevel", "error"]
     probe_info = []
     for i, clip in enumerate(clips):
@@ -493,12 +541,15 @@ def render(job, work: Path):
         speed = safe_number(clip.get("speed", 1.0), .25, 4.0, "speed")
         reverse = clip.get("reverse", False)
         if not isinstance(reverse, bool): raise ValueError("invalid_reverse")
+        speed_segments = clip_speed_segments(clip, (end-start)*1000)
+        if reverse and clip.get("speedCurve"):
+            raise ValueError("reverse_with_speed_curve_unsupported")
         if media_type == "image":
             input_args += ["-loop", "1", "-t", str(end-start), "-i", str(path)]
         else:
             input_args += ["-ss", str(start), "-t", str(end-start), "-i", str(path)]
         freeze_ms = safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")
-        local.append(path); clip_lengths.append((end-start)/speed + freeze_ms/1000); probe_info.append((v, media_type == "video" and any(s.get("codec_type") == "audio" for s in meta.get("streams", []))))
+        local.append(path); clip_lengths.append(speed_curve_duration(speed_segments) + freeze_ms/1000); probe_info.append((v, media_type == "video" and any(s.get("codec_type") == "audio" for s in meta.get("streams", [])))); trim_ranges.append((start, end))
     if sum(clip_lengths) > MAX_DURATION: raise ValueError("project_duration_limit")
     music_path = None
     music = plan.get("musicPath")
@@ -515,7 +566,7 @@ def render(job, work: Path):
     )
 
     filters, video_labels, audio_labels = [], [], []
-    for i, (clip, (v, has_audio)) in enumerate(zip(clips, probe_info)):
+    for i, (clip, (v, has_audio), (trim_start, trim_end)) in enumerate(zip(clips, probe_info, trim_ranges)):
         rot = int(clip.get("rotation", 0)) % 360
         if rot not in (0, 90, 180, 270): raise ValueError("unsupported_rotation")
         vf = []
@@ -532,7 +583,10 @@ def render(job, work: Path):
         if frame_rate not in (24, 25, 30, 50, 60): raise ValueError("unsupported_frame_rate")
         vf += [f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos", f"crop={width}:{height}", "setsar=1", f"fps={frame_rate}"]
         vf += effect_vf
-        if speed != 1.0: vf.append(f"setpts=(PTS-STARTPTS)/{speed}")
+        speed_segments = clip_speed_segments(clip, (trim_end-trim_start)*1000)
+        if clip.get("speedCurve"):
+            vf.append(speed_curve_setpts(speed_segments))
+        elif speed != 1.0: vf.append(f"setpts=(PTS-STARTPTS)/{speed}")
         freeze_ms = safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")
         if freeze_ms: vf.append(f"tpad=stop_mode=clone:stop_duration={freeze_ms/1000:.6f}")
         brightness = safe_number(clip.get("brightness", 0), -.25, .25, "brightness")
@@ -546,22 +600,28 @@ def render(job, work: Path):
         for keyframe in keyframes:
             if not isinstance(keyframe, dict):
                 raise ValueError("invalid_keyframe")
-            time_ms = safe_number(keyframe.get("timeMs", 0), 0, (end-start)/speed, "keyframe_time")
+            time_ms = safe_number(keyframe.get("timeMs", 0), 0, clip_lengths[i] - safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")/1000, "keyframe_time")
             kb = safe_number(keyframe.get("brightness", brightness), -.25, .25, "keyframe_brightness")
             kc = 1 + safe_number(keyframe.get("contrast", contrast-1), -.3, .3, "keyframe_contrast")
             ks = 1 + safe_number(keyframe.get("saturation", (saturation-1)*100), -20, 30, "keyframe_saturation") / 100
             kv = safe_number(keyframe.get("volume", volume), 0, 1, "keyframe_volume")
-            normalized.append((time_ms/1000, kb, kc, ks, kv))
+            kx = safe_number(keyframe.get("x", clip.get("positionX", 0)), -1, 1, "keyframe_x")
+            ky = safe_number(keyframe.get("y", clip.get("positionY", 0)), -1, 1, "keyframe_y")
+            kz = safe_number(keyframe.get("scale", clip.get("scale", 1)), .25, 4, "keyframe_scale")
+            kr = safe_number(keyframe.get("rotation", 0), -360, 360, "keyframe_rotation")
+            ko = safe_number(keyframe.get("opacity", clip.get("opacity", 1)), 0, 1, "keyframe_opacity")
+            normalized.append((time_ms/1000, kb, kc, ks, kv, kx, ky, kz, kr, ko))
         normalized.sort(key=lambda item: item[0])
-        def keyframe_expr(column, fallback):
-            value = f"{normalized[-1][column] if normalized else fallback:.6f}"
-            for left, right in reversed(list(zip(normalized, normalized[1:]))):
+        def keyframe_expr(column, fallback, variable="t", points=None):
+            frames = normalized if points is None else points
+            value = f"{frames[-1][column] if frames else fallback:.6f}"
+            for left, right in reversed(list(zip(frames, frames[1:]))):
                 t0, t1 = left[0], right[0]
                 v0, v1 = left[column], right[column]
                 if t1 > t0:
-                    value = f"if(lt(t\\,{t1:.6f})\\,{v0:.6f}+({v1-v0:.6f})*(t-{t0:.6f})/{t1-t0:.6f}\\,{value})"
-            if normalized:
-                value = f"if(lt(t\\,{normalized[0][0]:.6f})\\,{normalized[0][column]:.6f}\\,{value})"
+                    value = f"if(lt({variable}\\,{t1:.6f})\\,{v0:.6f}+({v1-v0:.6f})*({variable}-{t0:.6f})/{t1-t0:.6f}\\,{value})"
+            if frames:
+                value = f"if(lt({variable}\\,{frames[0][0]:.6f})\\,{frames[0][column]:.6f}\\,{value})"
             return value
         if normalized:
             vf.append(f"eq=eval=frame:brightness='{keyframe_expr(1, brightness)}':contrast='{keyframe_expr(2, contrast)}':saturation='{keyframe_expr(3, saturation)}'")
@@ -569,22 +629,84 @@ def render(job, work: Path):
             vf.append(f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}")
         if sharpness > 0:
             vf.append(f"unsharp=5:5:{sharpness:.3f}:5:5:0")
+        mask = clip.get("mask", "none")
+        if mask not in ("none", "circle", "rectangle"): raise ValueError("unsupported_mask")
+        feather = safe_number(clip.get("maskFeather", 0), 0, .5, "mask_feather")
+        key_enabled = clip.get("chromaKeyEnabled", False)
+        if not isinstance(key_enabled, bool): raise ValueError("invalid_chroma_key")
+        if key_enabled:
+            color = int(safe_number(clip.get("chromaKeyColor", 0xFF00FF00), 0, 0xFFFFFFFF, "chroma_key_color")) & 0xFFFFFF
+            similarity = safe_number(clip.get("chromaSimilarity", .25), 0, 1, "chroma_similarity")
+            blend = safe_number(clip.get("chromaBlend", .08), 0, 1, "chroma_blend")
+            # colorkey is the RGB variant and accepts RGBA frames; chromakey is
+            # a YUV filter and can reject the editor's alpha-capable stream.
+            vf.append(f"format=rgba,colorkey=0x{color:06X}:{similarity:.4f}:{blend:.4f}")
+        transform_rotation = safe_number(clip.get("transformRotation", 0), -360, 360, "transform_rotation")
+        raw_transform_keyframes = clip.get("transformKeyframes", [])
+        if not isinstance(raw_transform_keyframes, list) or len(raw_transform_keyframes) > 100:
+            raise ValueError("invalid_transform_keyframes")
+        transform_normalized = []
+        for point in raw_transform_keyframes:
+            if not isinstance(point, dict): raise ValueError("invalid_transform_keyframe")
+            at = safe_number(point.get("timeMs", 0), 0, max(0, clip_lengths[i] * 1000 - 1), "transform_keyframe_time") / 1000
+            tx = safe_number(point.get("x", clip.get("positionX", 0)), -1, 1, "transform_keyframe_x")
+            ty = safe_number(point.get("y", clip.get("positionY", 0)), -1, 1, "transform_keyframe_y")
+            ts = safe_number(point.get("scale", clip.get("scale", 1)), .5, 2.5, "transform_keyframe_scale")
+            tr = safe_number(point.get("rotation", clip.get("transformRotation", 0)), -360, 360, "transform_keyframe_rotation")
+            to = safe_number(point.get("opacity", clip.get("opacity", 1)), 0, 1, "transform_keyframe_opacity")
+            transform_normalized.append((at, 0, 1, 1, 1, tx, ty, ts, tr, to))
+        transform_normalized.sort(key=lambda item: item[0])
+        transform_points = bool(transform_normalized) or any(abs(float(clip.get(name, default))-default) > .0001 for name, default in (("positionX",0), ("positionY",0), ("scale",1), ("opacity",1))) or abs(transform_rotation) > .0001
+        if transform_points:
+            fps_for_transform = int(safe_number(plan.get("exportFrameRate", 30), 24, 60, "frame_rate"))
+            x_expr = keyframe_expr(5, safe_number(clip.get("positionX", 0), -1, 1, "position_x"), f"on/{fps_for_transform}", transform_normalized)
+            y_expr = keyframe_expr(6, safe_number(clip.get("positionY", 0), -1, 1, "position_y"), f"on/{fps_for_transform}", transform_normalized)
+            zoom_expr = keyframe_expr(7, safe_number(clip.get("scale", 1), .5, 2.5, "scale"), f"on/{fps_for_transform}", transform_normalized)
+            angle_expr = keyframe_expr(8, transform_rotation, "t", transform_normalized)
+            opacity_expr = keyframe_expr(9, safe_number(clip.get("opacity", 1), 0, 1, "opacity"), "T", transform_normalized)
+            # A 4x transparent overscan canvas lets zoompan represent 0.5x to
+            # 2.5x scale while staying inside zoompan's supported 1x..10x range.
+            zoom_expr = f"max(1,min(10,({zoom_expr})*4))"
+            vf += ["format=rgba,pad=iw*4:ih*4:iw*3/2:ih*3/2:color=black@0", f"rotate=a='({angle_expr})*PI/180':ow=iw:oh=ih:c=black@0", f"zoompan=z='{zoom_expr}':x='clip(iw/2-iw/zoom/2-({x_expr})*iw/(2*zoom),0,iw-iw/zoom)':y='clip(ih/2-ih/zoom/2-({y_expr})*ih/(2*zoom),0,ih-ih/zoom)':d=1:s={width}x{height}:fps={fps_for_transform}", f"format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*({opacity_expr})'"]
+        elif mask != "none":
+            vf.append("format=rgba")
+        if mask != "none":
+            shape = "pow((X-W/2)/(min(W,H)/2),2)+pow((Y-H/2)/(min(W,H)/2),2)" if mask == "circle" else "max(abs((X-W/2)/(W*0.42)),abs((Y-H/2)/(H*0.42)))"
+            if feather:
+                alpha_expr = f"255*clip((1-({shape}))*min(W,H)/({feather*min(width,height):.6f}),0,1)" if mask == "circle" else f"255*clip((1-({shape}))*min(W,H)/({feather*min(width,height):.6f}),0,1)"
+            else:
+                alpha_expr = f"if(lte({shape},1),255,0)"
+            if key_enabled or transform_points:
+                alpha_expr = f"alpha(X,Y)*({alpha_expr})/255"
+            vf.append(f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha_expr}'")
         # Some effects (notably shake's crop/scale chain) can adjust SAR after
         # the initial canvas normalization. Reassert square pixels immediately
         # before concat/xfade so mixed clips have matching stream parameters.
-        filters.append(f"[{i}:v]{','.join(vf)},setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v{i}]")
+        has_alpha = mask != "none" or key_enabled or transform_points
+        if has_alpha:
+            background = int(safe_number(clip.get("chromaBackgroundColor", 0xFF000000), 0, 0xFFFFFFFF, "chroma_background_color")) & 0xFFFFFF
+            filters.append(f"[{i}:v]{','.join(vf)},setsar=1,setpts=PTS-STARTPTS[vraw{i}]")
+            filters.append(f"color=c=0x{background:06X}:s={width}x{height}:r={frame_rate}:d={clip_lengths[i]:.6f}[vbg{i}]")
+            filters.append(f"[vbg{i}][vraw{i}]overlay=shortest=1:format=auto,format=yuv420p[v{i}]")
+        else:
+            filters.append(f"[{i}:v]{','.join(vf)},setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v{i}]")
         video_labels.append(f"[v{i}]")
         if has_audio:
             af = "areverse," if reverse else ""
-            if speed != 1.0:
-                remaining = speed
-                tempo = []
-                while remaining > 2.0:
-                    tempo.append("atempo=2.0"); remaining /= 2.0
-                while remaining < 0.5:
-                    tempo.append("atempo=0.5"); remaining /= 0.5
-                tempo.append(f"atempo={remaining:.6f}")
-                af += ",".join(tempo) + ","
+            if clip.get("speedCurve"):
+                # Split the trimmed source audio at each curve point, retime each
+                # segment by its own factor, and concatenate in source order.
+                if reverse: raise ValueError("reverse_with_speed_curve_unsupported")
+                parts = []
+                for part_index, (part_start, part_end, part_speed) in enumerate(speed_segments):
+                    label = f"[as{i}_{part_index}]"
+                    part_filters = [f"atrim=start={part_start:.6f}:end={part_end:.6f}", "asetpts=PTS-STARTPTS", *atempo_chain(part_speed)]
+                    filters.append(f"[{i}:a]{','.join(part_filters)}{label}")
+                    parts.append(label)
+                filters.append("".join(parts) + f"concat=n={len(parts)}:v=0:a=1[aspeed{i}]")
+                af = ""
+            elif speed != 1.0:
+                af += ",".join(atempo_chain(speed)) + ","
             audio_fx = []
             if clip.get("audioDenoise") is True: audio_fx.append("afftdn=nf=-25")
             highpass = int(safe_number(clip.get("audioHighPassHz", 0), 0, 300, "audio_highpass"))
@@ -595,7 +717,13 @@ def render(job, work: Path):
                 audio_fx.append(f"volume='{keyframe_expr(4, volume)}':eval=frame")
             else:
                 audio_fx.append(f"volume={volume}")
-            filters.append(f"[{i}:a]{af}asetpts=PTS-STARTPTS,{','.join(audio_fx)}[abase{i}]")
+            if clip.get("speedCurve"):
+                if audio_fx:
+                    filters.append(f"[aspeed{i}]{','.join(audio_fx)}[abase{i}]")
+                else:
+                    filters.append(f"[aspeed{i}]anull[abase{i}]")
+            else:
+                filters.append(f"[{i}:a]{af}asetpts=PTS-STARTPTS,{','.join(audio_fx)}[abase{i}]")
             fade_in = safe_number(clip.get("audioFadeInMs", 0), 0, 10000, "audio_fade_in") / 1000
             fade_out = safe_number(clip.get("audioFadeOutMs", 0), 0, 10000, "audio_fade_out") / 1000
             audio_filters = []

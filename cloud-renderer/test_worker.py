@@ -70,6 +70,45 @@ class CompletedSourceCleanupTests(unittest.TestCase):
 
 
 class CloudEditingFeatureTests(unittest.TestCase):
+    def test_speed_curve_maps_segments_and_duration(self):
+        segments = worker.clip_speed_segments({
+            "speed": 1,
+            "speedCurve": [{"timeMs": 2000, "speed": 2}],
+        }, 5000)
+        self.assertEqual(segments, [(0, 2, 1.0), (2, 5, 2.0)])
+        self.assertEqual(worker.speed_curve_duration(segments), 3.5)
+        self.assertIn("setpts=", worker.speed_curve_setpts(segments))
+        with self.assertRaisesRegex(ValueError, "invalid_speed_curve_order"):
+            worker.clip_speed_segments({"speedCurve": [{"timeMs": 1000, "speed": 1}, {"timeMs": 1000, "speed": 2}]}, 5000)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is installed in the worker workflow")
+    def test_speed_curve_filter_executes_on_real_ffmpeg(self):
+        expression = worker.speed_curve_setpts([(0, .2, 1.0), (.2, .4, 2.0)])
+        result = subprocess.run([
+            "ffmpeg", "-hide_banner", "-v", "error", "-f", "lavfi", "-i",
+            "testsrc2=size=320x180:rate=30:duration=0.4", "-vf", expression,
+            "-f", "null", "-",
+        ], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is installed in the worker workflow")
+    def test_chroma_mask_and_transform_filter_chain_executes(self):
+        graph = (
+            "scale=320:180,format=rgba,colorkey=0x00FF00:0.25:0.08,"
+            "rotate=a='(t*30)*PI/180':ow=iw:oh=ih:c=black@0,"
+            "pad=iw*4:ih*4:iw*3/2:ih*3/2:color=black@0,"
+            "zoompan=z='4.8':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=1:s=320x180:fps=30,"
+            "format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*0.8',"
+            "geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+            "a='alpha(X,Y)*if(lte(pow((X-W/2)/(min(W,H)/2),2)+pow((Y-H/2)/(min(W,H)/2),2),1),255,0)/255'"
+        )
+        result = subprocess.run([
+            "ffmpeg", "-hide_banner", "-v", "error", "-f", "lavfi", "-i",
+            "testsrc2=size=320x180:rate=30:duration=0.2", "-vf", graph,
+            "-f", "null", "-",
+        ], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_transition_filter_graph_uses_real_xfade_and_audio_crossfade(self):
         source = read_worker_source()
         self.assertIn("xfade=transition=", source)
