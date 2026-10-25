@@ -500,7 +500,7 @@ def render(job, work: Path):
         if reverse: vf.append("reverse")
         frame_rate = int(safe_number(plan.get("exportFrameRate", 30), 24, 60, "frame_rate"))
         if frame_rate not in (24, 25, 30, 50, 60): raise ValueError("unsupported_frame_rate")
-        vf += [f"scale={width}:{height}:force_original_aspect_ratio=increase", f"crop={width}:{height}", "setsar=1", f"fps={frame_rate}"]
+        vf += [f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos", f"crop={width}:{height}", "setsar=1", f"fps={frame_rate}"]
         vf += effect_vf
         if speed != 1.0: vf.append(f"setpts=(PTS-STARTPTS)/{speed}")
         freeze_ms = safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")
