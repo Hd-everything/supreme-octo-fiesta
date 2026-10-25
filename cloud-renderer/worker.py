@@ -539,7 +539,10 @@ def render(job, work: Path):
             vf.append(f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}")
         if sharpness > 0:
             vf.append(f"unsharp=5:5:{sharpness:.3f}:5:5:0")
-        filters.append(f"[{i}:v]{','.join(vf)},format=yuv420p,setpts=PTS-STARTPTS[v{i}]")
+        # Some effects (notably shake's crop/scale chain) can adjust SAR after
+        # the initial canvas normalization. Reassert square pixels immediately
+        # before concat/xfade so mixed clips have matching stream parameters.
+        filters.append(f"[{i}:v]{','.join(vf)},setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v{i}]")
         video_labels.append(f"[v{i}]")
         if has_audio:
             af = "areverse," if reverse else ""
@@ -573,11 +576,18 @@ def render(job, work: Path):
             filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={clip_lengths[i]:.6f},asetpts=PTS-STARTPTS[a{i}]")
         audio_labels.append(f"[a{i}]")
     # Real transitions are rendered by FFmpeg, not simulated only in the editor preview.
-    transition_map = {"fade": "fade", "fadeblack": "fadeblack", "dissolve": "dissolve", "wipeleft": "wipeleft", "slideright": "slideright"}
+    transition_map = {name: name for name in (
+        "fade", "fadeblack", "fadewhite", "dissolve", "pixelize", "radial", "distance", "rectcrop",
+        "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright", "slideup", "slidedown",
+        "smoothleft", "smoothright", "smoothup", "smoothdown", "circleopen", "circleclose",
+        "vertopen", "vertclose", "horzopen", "horzclose", "diagtl", "diagtr", "diagbl", "diagbr",
+        "hlslice", "hrslice", "vuslice", "vdslice", "coverleft", "coverright", "coverup", "coverdown",
+        "revealleft", "revealright", "revealup", "revealdown",
+    )}
     active_transitions = []
     for i in range(1, len(clips)):
         kind = clips[i].get("transition", "cut")
-        if kind not in ("cut", "fade", "fadeblack", "dissolve", "wipeleft", "slideright"):
+        if kind != "cut" and kind not in transition_map:
             raise ValueError("unsupported_transition")
         duration = safe_number(clips[i].get("transitionMs", 0), 0, 2000, "transition_duration") / 1000
         if kind != "cut" and duration > 0:
