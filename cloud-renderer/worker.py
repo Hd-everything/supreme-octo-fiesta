@@ -196,9 +196,28 @@ def storage_upload(source: Path, object_path: str, job=None):
     if not response.ok:
         diagnostic = safe_ffmpeg_diagnostic(response.text)
         detail = diagnostic or response.reason or "no response details"
-        raise requests.HTTPError(
+        error = requests.HTTPError(
             f"storage_upload_failed:http_{response.status_code}:{detail}", response=response
         )
+        error.vyntra_storage_upload = True
+        raise error
+
+
+def is_storage_capacity_error(exc):
+    """Only quota/object-cap failures should move an output to primary storage."""
+    if not getattr(exc, "vyntra_storage_upload", False):
+        return False
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    # Supabase reports object limits as 413 and project quota restrictions as 402.
+    # 507 is the standard insufficient-storage response for compatible gateways.
+    if status in (402, 413, 507):
+        return True
+    body = str(getattr(response, "text", "")).lower()
+    return any(code in body for code in (
+        "exceed_storage_size_quota", "exceeded_storage_quota",
+        "storage_quota_exceeded", "insufficient_storage", "storage is full",
+    ))
 
 
 def storage_remove(object_paths: list[str], job=None):
@@ -225,15 +244,21 @@ def job_output_paths(job) -> list[str]:
     return list(dict.fromkeys(path for path in paths if isinstance(path, str) and path))
 
 
-def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[str, dict]:
+def set_output_storage_target(job, target: str):
+    """Persist the actual output route so signing and cleanup use the same project."""
+    snapshot = job.get("project_snapshot") if isinstance(job, dict) else None
+    snapshot = dict(snapshot) if isinstance(snapshot, dict) else {}
+    snapshot["vyntraOutputStore"] = target
+    job["project_snapshot"] = snapshot
+    update_job(job["id"], project_snapshot=snapshot, output_path=None, output_metadata=None)
+
+
+def _upload_output_parts_on_current_store(source: Path, job, metadata: dict, work: Path) -> tuple[str, dict]:
     total_bytes = source.stat().st_size
     if total_bytes <= 0:
         raise ValueError("empty_render_output")
     if total_bytes > MAX_OUTPUT_BYTES:
         raise ValueError("output_exceeds_free_storage_limit")
-    snapshot = job.get("project_snapshot") if isinstance(job, dict) else None
-    storage_target = "secondary" if isinstance(snapshot, dict) and snapshot.get("vyntraOutputStore") == "secondary" else "primary"
-    print(f"uploading {total_bytes} output bytes to {storage_target} storage", flush=True)
     if total_bytes <= OUTPUT_PART_BYTES:
         object_path = f'{job["owner_id"]}/exports/{job["id"]}.mp4'
         try:
@@ -248,12 +273,16 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
         except Exception:
             try:
                 storage_remove([object_path], job)
-                update_job(job["id"], output_path=None, output_metadata=None)
             except Exception as cleanup_error:
                 print("partial output cleanup failed", type(cleanup_error).__name__, flush=True)
+            try:
+                update_job(job["id"], output_path=None, output_metadata=None)
+            except Exception as update_error:
+                print("partial output record cleanup failed", type(update_error).__name__, flush=True)
             raise
     part_count = (total_bytes + OUTPUT_PART_BYTES - 1) // OUTPUT_PART_BYTES
     uploaded = []
+    attempted_paths = []
     try:
         with source.open("rb") as rendered:
             for index in range(part_count):
@@ -266,6 +295,7 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
                 part_path = work / f"output_part_{index:03d}.mp4"
                 part_path.write_bytes(data)
                 object_path = f'{job["owner_id"]}/exports/{job["id"]}.part{index:03d}'
+                attempted_paths.append(object_path)
                 storage_upload(part_path, object_path, job)
                 part_path.unlink(missing_ok=True)
                 uploaded.append({"path": object_path, "bytes": len(data)})
@@ -279,11 +309,31 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
         return uploaded[0]["path"], {**metadata, "bytes": total_bytes, "chunked": True, "chunks": uploaded}
     except Exception:
         try:
-            storage_remove([part["path"] for part in uploaded], job)
-            update_job(job["id"], output_path=None, output_metadata=None)
+            storage_remove(attempted_paths, job)
         except Exception as cleanup_error:
             print("partial output cleanup failed", type(cleanup_error).__name__, flush=True)
+        try:
+            update_job(job["id"], output_path=None, output_metadata=None)
+        except Exception as update_error:
+            print("partial output record cleanup failed", type(update_error).__name__, flush=True)
         raise
+
+
+def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[str, dict]:
+    snapshot = job.get("project_snapshot") if isinstance(job, dict) else None
+    storage_target = "secondary" if isinstance(snapshot, dict) and snapshot.get("vyntraOutputStore") == "secondary" else "primary"
+    total_bytes = source.stat().st_size
+    print(f"uploading {total_bytes} output bytes to {storage_target} storage", flush=True)
+    try:
+        return _upload_output_parts_on_current_store(source, job, metadata, work)
+    except Exception as exc:
+        if storage_target != "secondary" or not is_storage_capacity_error(exc):
+            raise
+        status = getattr(getattr(exc, "response", None), "status_code", "unknown")
+        print(f"secondary output storage rejected an object for capacity/size (HTTP {status}); falling back to primary", flush=True)
+        set_output_storage_target(job, "primary")
+        print("retrying the complete output in primary storage", flush=True)
+        return _upload_output_parts_on_current_store(source, job, metadata, work)
 
 def probe(path: Path):
     raw = subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)], timeout=45)
