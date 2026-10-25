@@ -235,6 +235,36 @@ def storage_remove(object_paths: list[str], job=None):
         response.read()
 
 
+def cleanup_source_objects(job):
+    """Free primary-bucket inputs after a completed output is safely recorded.
+
+    This is deliberately best-effort: a cleanup outage must not turn a valid
+    completed render into a failed job. The source paths remain in the row if
+    deletion or the follow-up row update fails, allowing client acknowledgement
+    to retry cleanup after delivery.
+    """
+    paths = job.get("source_object_paths")
+    paths = list(dict.fromkeys(path for path in paths if isinstance(path, str) and path)) if isinstance(paths, list) else []
+    if not paths:
+        return False
+    payload = json.dumps({"prefixes": paths}).encode()
+    request = urllib.request.Request(
+        SUPABASE_URL + "/storage/v1/object/" + BUCKET,
+        data=payload,
+        headers={"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}", "Content-Type": "application/json"},
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            response.read()
+        update_job(job["id"], source_object_paths=[])
+        print(f"removed {len(paths)} completed-job source objects", flush=True)
+        return True
+    except Exception as cleanup_error:
+        print("completed-job source cleanup deferred", type(cleanup_error).__name__, flush=True)
+        return False
+
+
 def job_output_paths(job) -> list[str]:
     metadata = job.get("output_metadata")
     chunks = metadata.get("chunks", []) if isinstance(metadata, dict) else []
@@ -752,6 +782,10 @@ def main():
                     output_path, metadata = upload_output_parts(output, job, metadata, Path(directory))
                     stage = "complete_job_record"
                     update_job(job["id"], status="completed", progress=100, output_path=output_path, output_metadata=metadata, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), error_code=None)
+                    # Inputs are no longer needed once the verified output and
+                    # completed state are persisted. Keep cleanup best-effort
+                    # so an output remains deliverable during storage outages.
+                    cleanup_source_objects(job)
             except InterruptedError:
                 update_job(job["id"], status="cancelled", progress=0, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
             except Exception as exc:

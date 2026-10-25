@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -45,6 +46,27 @@ class DispatchedJobClaimTests(unittest.TestCase):
         with patch.object(worker, "api", return_value=[]) as api:
             self.assertIsNone(worker.claim_render_job("12345678-1234-5678-1234-567812345678"))
         self.assertEqual(api.call_count, 1)
+
+
+class CompletedSourceCleanupTests(unittest.TestCase):
+    def test_sources_are_removed_from_primary_bucket_and_cleared_after_success(self):
+        job = {"id": "job-123", "source_object_paths": ["owner/source-a", "owner/source-b", "owner/source-a"]}
+        with patch.object(worker.urllib.request, "urlopen") as urlopen, \
+             patch.object(worker, "update_job") as update:
+            self.assertTrue(worker.cleanup_source_objects(job))
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, worker.SUPABASE_URL + "/storage/v1/object/" + worker.BUCKET)
+        self.assertEqual(request.get_method(), "DELETE")
+        self.assertEqual(json.loads(request.data), {"prefixes": ["owner/source-a", "owner/source-b"]})
+        update.assert_called_once_with("job-123", source_object_paths=[])
+
+    def test_cleanup_failure_does_not_clear_source_paths_or_raise(self):
+        job = {"id": "job-123", "source_object_paths": ["owner/source-a"]}
+        with patch.object(worker.urllib.request, "urlopen", side_effect=OSError("storage unavailable")), \
+             patch.object(worker, "update_job") as update:
+            self.assertFalse(worker.cleanup_source_objects(job))
+        update.assert_not_called()
 
 
 class CloudEditingFeatureTests(unittest.TestCase):
