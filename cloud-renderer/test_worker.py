@@ -209,7 +209,10 @@ class OutputChunkTests(unittest.TestCase):
                         Path(directory),
                     )
 
-        remove.assert_called_once_with([uploaded[0]], {"id": "job-123", "owner_id": "owner-123"})
+        remove.assert_called_once_with(
+            [uploaded[0], "owner-123/exports/job-123.part001"],
+            {"id": "job-123", "owner_id": "owner-123"},
+        )
         self.assertEqual(update.call_args.args[0], "job-123")
         self.assertEqual(update.call_args.kwargs["output_path"], None)
 
