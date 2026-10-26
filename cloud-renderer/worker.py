@@ -564,6 +564,7 @@ def render(job, work: Path):
                 progress=lambda p, jid=job["id"]: update_job(jid, progress=p),
             )
             path = enhanced_path
+            input_args[-1] = str(path)  # Replace the just-added source input with the AI-enhanced intermediate.
             meta = probe(path)
             v = next((s for s in meta.get("streams", []) if s.get("codec_type") == "video"), None)
             if not v:
@@ -869,7 +870,7 @@ def render(job, work: Path):
         encoder_args += ["-b:v", f"{bitrate}k", "-maxrate", f"{int(bitrate * 1.25)}k", "-bufsize", f"{bitrate * 2}k"]
     cmd = input_args + ["-filter_complex", ";".join(filters), "-map", video_label, "-map", audio_label] + encoder_args + [
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)]
-    update_job(job["id"], status="processing", progress=1, started_at=job.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    update_job(job["id"], status="processing", progress=10 if ai_enhancement else 1, started_at=job.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     stderr_path = work / "ffmpeg.stderr"
     with stderr_path.open("w+b") as stderr_file:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_file, text=True, bufsize=1)
