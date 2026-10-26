@@ -17,6 +17,25 @@ def read_worker_source():
     return Path(worker.__file__).read_text(encoding="utf-8")
 
 
+class ESPCNGuardTests(unittest.TestCase):
+    def test_espcn_accepts_short_480p_video(self):
+        from espcn import validate_espcn_source
+        validate_espcn_source(854, 480, 24, 8.0)
+        validate_espcn_source(480, 854, 24, 8.0)
+
+    def test_espcn_rejects_hd_sources_and_long_clips(self):
+        from espcn import validate_espcn_source
+        with self.assertRaisesRegex(ValueError, "espcn_source_must_be_480p_or_lower"):
+            validate_espcn_source(1280, 720, 24, 5.0)
+        with self.assertRaisesRegex(ValueError, "espcn_clip_limit_10_seconds"):
+            validate_espcn_source(640, 360, 24, 11.0)
+
+    def test_espcn_rejects_high_frame_rate(self):
+        from espcn import validate_espcn_source
+        with self.assertRaisesRegex(ValueError, "espcn_frame_rate_limit_24fps"):
+            validate_espcn_source(640, 360, 30, 5.0)
+
+
 class RenderLimitsTests(unittest.TestCase):
     def test_status_hd_defaults_to_three_minutes_and_fifty_mib(self):
         self.assertEqual(worker.MAX_DURATION, 180)

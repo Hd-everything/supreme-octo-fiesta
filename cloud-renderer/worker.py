@@ -5,6 +5,7 @@ from __future__ import annotations
 import json, os, shutil, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
 from pathlib import Path
 import re
+from fractions import Fraction
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SERVICE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -489,6 +490,10 @@ def visual_effect_filters(effect: str, width: int, height: int) -> list[str]:
 def render(job, work: Path):
     plan = job["project_snapshot"]
     validate_source_manifest(plan, job["owner_id"])
+    ai_enhancement = plan.get("aiEnhancement", False)
+    if not isinstance(ai_enhancement, bool):
+        raise ValueError("invalid_ai_enhancement_flag")
+    ai_total_seconds = 0.0
     clips = plan.get("clips")
     if not isinstance(clips, list) or not 1 <= len(clips) <= 24:
         raise ValueError("unsupported_project_clip_count")
@@ -539,6 +544,30 @@ def render(job, work: Path):
         start, end = clip_trim_range(clip, duration)
         if end <= start or end - start > MAX_DURATION: raise ValueError("invalid_trim_range")
         speed = safe_number(clip.get("speed", 1.0), .25, 4.0, "speed")
+        if ai_enhancement:
+            if media_type != "video":
+                raise ValueError("espcn_requires_video_clips")
+            from espcn import validate_espcn_source, upscale_video
+            try:
+                source_fps = float(Fraction(str(v.get("avg_frame_rate") or v.get("r_frame_rate") or "24/1")))
+            except (ValueError, ZeroDivisionError):
+                raise ValueError("espcn_invalid_source_frame_rate")
+            validate_espcn_source(int(v.get("width", 0)), int(v.get("height", 0)), source_fps, duration)
+            ai_total_seconds += duration
+            if ai_total_seconds > 10.0:
+                raise ValueError("espcn_total_source_limit_10_seconds")
+            enhanced_path = work / f"clip_{i}_espcn.mp4"
+            model_path = work / "espcn_x3.tflite"
+            upscale_video(
+                path, enhanced_path, int(v["width"]), int(v["height"]),
+                source_fps, duration, model_path,
+                progress=lambda p, jid=job["id"]: update_job(jid, progress=p),
+            )
+            path = enhanced_path
+            meta = probe(path)
+            v = next((s for s in meta.get("streams", []) if s.get("codec_type") == "video"), None)
+            if not v:
+                raise RuntimeError("espcn_output_has_no_video")
         reverse = clip.get("reverse", False)
         if not isinstance(reverse, bool): raise ValueError("invalid_reverse")
         speed_segments = clip_speed_segments(clip, (end-start)*1000)
@@ -850,7 +879,7 @@ def render(job, work: Path):
             if line.startswith("out_time_ms="):
                 try:
                     done = int(line.split("=", 1)[1].strip()) // 1000
-                    progress = min(94, max(1, int(done * 94 / max(1, duration_ms))))
+                    progress = min(94, max(10 if ai_enhancement else 1, int((10 if ai_enhancement else 0) + done * (84 if ai_enhancement else 94) / max(1, duration_ms))))
                     update_job(job["id"], progress=progress)
                 except ValueError: pass
             # Worker restarts and cancellation are observed through the job record.

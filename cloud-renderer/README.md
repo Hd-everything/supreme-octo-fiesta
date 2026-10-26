@@ -21,3 +21,12 @@ Supabase Storage limits and egress vary by plan. Status HD cloud requests are ca
 ## Important integration status
 
 The Flutter client uploads sources to the primary project in 48,000,000-byte parts (up to 200 MiB combined per job), then the Edge Function validates the job and dispatches GitHub. The worker reassembles source bytes before probing/rendering. After the app assembles and verifies the downloaded MP4, it acknowledges delivery; the Edge Function deletes source objects in primary storage and output objects from the recorded output project. Rendered outputs also use 48,000,000-byte parts and have a 200,000,000-byte per-export cap. Splitting does not alter media content or quality. Set up scheduled cleanup for abandoned jobs as a separate safeguard because a user may never finish downloading. Run a real two-project render and verify output cleanup before advertising the secondary route as active.
+
+
+## Optional ESPCN AI restoration
+
+The existing render queue and GitHub Actions dispatch are unchanged. A Status HD project can opt in by setting `project_snapshot.aiEnhancement=true`; when absent or false, the original FFmpeg-only render path is unchanged. This uses the same ESPCN x3 TensorFlow Lite model already packaged by the Vyntra app, downloaded from its published Apache-2.0 source and SHA-256 verified before inference.
+
+To protect the one-shot runner and avoid unexpectedly long exports, this initial CPU implementation is limited to video-only projects with source clips no longer than 10 seconds each, no more than 10 seconds of source video in total, source dimensions at or below 480p, and source frame rate at or below 24 fps. Mixed still-image/video projects are rejected in AI mode instead of silently skipping AI on photos. The AI pass performs frame-by-frame ESPCN tile inference, creates a 3x intermediate, then passes it into the existing editor render so framing, edits, overlays, audio, target resolution, verification, upload, and cleanup remain in the same pipeline. Ordinary jobs do not download the model or run inference.
+
+This is a first CPU-backed integration, not a claim of production performance. The actual GitHub Actions run must pass the worker tests and a short end-to-end export before the option is exposed publicly. ESPCN can be substantially slower than ordinary exports, and its reconstructed detail is estimated rather than guaranteed to match original detail.
