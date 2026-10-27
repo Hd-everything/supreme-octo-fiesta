@@ -19,6 +19,7 @@ permissions:
 
 jobs:
   render:
+    if: github.event_name == 'push' || vars.VYNTRA_RENDER_WORKER_ENABLED == 'true'
     name: Install FFmpeg and process one queued render
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -60,6 +61,7 @@ jobs:
           /tmp/vyntra-venv/bin/python -m unittest -v test_worker.py
 
       - name: Process one queued render
+        if: github.event_name != 'push'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
