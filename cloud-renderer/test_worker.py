@@ -23,17 +23,63 @@ class ESPCNGuardTests(unittest.TestCase):
         validate_espcn_source(854, 480, 24, 8.0)
         validate_espcn_source(480, 854, 24, 8.0)
 
-    def test_espcn_rejects_hd_sources_and_long_clips(self):
+    def test_espcn_rejects_hd_sources_and_clips_over_three_minutes(self):
         from espcn import validate_espcn_source
         with self.assertRaisesRegex(ValueError, "espcn_source_must_be_480p_or_lower"):
             validate_espcn_source(1280, 720, 24, 5.0)
-        with self.assertRaisesRegex(ValueError, "espcn_clip_limit_10_seconds"):
-            validate_espcn_source(640, 360, 24, 11.0)
+        validate_espcn_source(640, 360, 24, 180.0)
+        with self.assertRaisesRegex(ValueError, "espcn_clip_limit_180_seconds"):
+            validate_espcn_source(640, 360, 24, 180.1)
 
     def test_espcn_rejects_high_frame_rate(self):
         from espcn import validate_espcn_source
         with self.assertRaisesRegex(ValueError, "espcn_frame_rate_limit_24fps"):
             validate_espcn_source(640, 360, 30, 5.0)
+
+
+class AiEnhancementRoutingTests(unittest.TestCase):
+    def test_every_advertised_model_has_a_worker_route(self):
+        self.assertEqual(
+            set(worker.SUPPORTED_AI_MODELS),
+            {"espcn", "edsr", "swinir", "realesrgan", "basicvsr", "vrt"},
+        )
+        for model in worker.SUPPORTED_AI_MODELS:
+            with self.subTest(model=model):
+                mode, selected = worker.resolve_ai_selection(
+                    {"enhancementMode": "ai", "aiModel": model},
+                    [{"mediaType": "video"}], "1440p",
+                )
+                self.assertEqual((mode, selected), ("ai", model))
+                if model != "espcn":
+                    requirements = Path(worker.__file__).with_name(worker.AI_REQUIREMENTS_BY_MODEL[model])
+                    self.assertTrue(requirements.is_file())
+
+    def test_legacy_espcn_flag_remains_compatible(self):
+        self.assertEqual(
+            worker.resolve_ai_selection(
+                {"aiEnhancement": True}, [{"mediaType": "video"}], "1440p"
+            ),
+            ("ai", "espcn"),
+        )
+
+    def test_ai_processed_clip_is_appended_as_an_input_without_corrupting_loglevel(self):
+        args = ["ffmpeg", "-loglevel", "error"]
+        worker.append_clip_input(args, Path("enhanced.mp4"), 0.0, 2.0, False)
+        self.assertEqual(args[args.index("-loglevel") + 1], "error")
+        self.assertEqual(args[-1], "enhanced.mp4")
+        self.assertEqual(args.count("-i"), 1)
+
+    def test_ai_resolution_and_clip_limits_are_enforced(self):
+        with self.assertRaisesRegex(ValueError, "ai_only_supports_1440p"):
+            worker.resolve_ai_selection(
+                {"enhancementMode": "ai", "aiModel": "swinir"},
+                [{"mediaType": "video"}], "1080p",
+            )
+        with self.assertRaisesRegex(ValueError, "ai_requires_single_video_clip"):
+            worker.resolve_ai_selection(
+                {"enhancementMode": "both", "aiModel": "vrt"},
+                [{"mediaType": "video"}, {"mediaType": "video"}], "2160p",
+            )
 
 
 class RenderLimitsTests(unittest.TestCase):

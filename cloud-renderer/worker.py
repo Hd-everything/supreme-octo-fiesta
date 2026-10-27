@@ -2,7 +2,7 @@
 """Vyntra cloud render worker. Runs outside Supabase Edge Functions."""
 from __future__ import annotations
 
-import json, os, shutil, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
+import hashlib, importlib, json, os, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
 from pathlib import Path
 import re
 from fractions import Fraction
@@ -19,6 +19,14 @@ MAX_SOURCE_FILE_BYTES = 200 * 1024 * 1024
 MAX_PROJECT_SOURCE_BYTES = 200 * 1024 * 1024
 OUTPUT_PART_BYTES = 48_000_000
 MAX_OUTPUT_BYTES = max(OUTPUT_PART_BYTES, int(os.getenv("VYNTRA_MAX_OUTPUT_BYTES", "200000000")))
+SUPPORTED_AI_MODELS = ("espcn", "edsr", "swinir", "realesrgan", "basicvsr", "vrt")
+AI_REQUIREMENTS_BY_MODEL = {
+    "edsr": "requirements-ai-image.txt",
+    "swinir": "requirements-ai-image.txt",
+    "realesrgan": "requirements-ai-image.txt",
+    "vrt": "requirements-vrt.txt",
+    "basicvsr": "requirements-temporal.txt",
+}
 ONESHOT = os.getenv("VYNTRA_ONESHOT", "false").lower() == "true"
 ENABLE_8K = os.getenv("VYNTRA_ENABLE_8K", "false").lower() == "true"
 MAX_JOBS = max(1, int(os.getenv("VYNTRA_MAX_CONCURRENT_JOBS", "1")))
@@ -459,6 +467,71 @@ def output_dimensions(source_width: int, source_height: int, rotation: int, aspe
     return width, height
 
 
+def ensure_ai_model_runtime(ai_model: str) -> None:
+    """Install heavyweight CPU inference packages only for jobs that need them."""
+    requirement_name = AI_REQUIREMENTS_BY_MODEL.get(ai_model)
+    if requirement_name is None:
+        if ai_model != "espcn":
+            raise ValueError("ai_model_unavailable")
+        return
+    requirements = Path(__file__).with_name(requirement_name)
+    if not requirements.is_file():
+        raise RuntimeError("ai_runtime_requirements_missing")
+    runtime_dir = Path(tempfile.gettempdir()) / "vyntra-ai-runtime" / requirements.stem
+    requirements_hash = hashlib.sha256(requirements.read_bytes()).hexdigest()[:16]
+    marker = runtime_dir / f".requirements-installed-{requirements_hash}"
+    if runtime_dir.exists() and not marker.is_file():
+        shutil.rmtree(runtime_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    if not marker.is_file():
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+                 "--no-cache-dir", "--target", str(runtime_dir), "-r", str(requirements)],
+                check=True, timeout=1200, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            shutil.rmtree(runtime_dir, ignore_errors=True)
+            raise RuntimeError("ai_runtime_install_failed:" + (exc.stdout or "")[-400:]) from exc
+        except Exception:
+            shutil.rmtree(runtime_dir, ignore_errors=True)
+            raise
+        marker.touch()
+    runtime_path = str(runtime_dir)
+    if runtime_path not in sys.path:
+        sys.path.insert(0, runtime_path)
+    importlib.invalidate_caches()
+
+
+def append_clip_input(input_args: list[str], path: Path, start: float, end: float, is_image: bool) -> None:
+    """Append the selected (possibly AI-processed) clip as a real FFmpeg input."""
+    if is_image:
+        input_args.extend(["-loop", "1", "-t", str(end - start), "-i", str(path)])
+    else:
+        input_args.extend(["-ss", str(start), "-t", str(end - start), "-i", str(path)])
+
+
+def resolve_ai_selection(plan: dict, clips: list, resolution: str) -> tuple[str, str]:
+    legacy_flag = plan.get("aiEnhancement", False)
+    if not isinstance(legacy_flag, bool):
+        raise ValueError("invalid_ai_enhancement_flag")
+    mode = plan.get("enhancementMode")
+    if mode is None:
+        mode = "ai" if legacy_flag else "normal"
+    model = plan.get("aiModel", "espcn")
+    if mode not in ("normal", "ai", "both"):
+        raise ValueError("unsupported_enhancement_mode")
+    if mode != "normal" and model not in SUPPORTED_AI_MODELS:
+        raise ValueError("ai_model_unavailable")
+    if mode == "ai" and resolution != "1440p":
+        raise ValueError("ai_only_supports_1440p")
+    if mode == "both" and resolution not in ("1440p", "2160p", "2880p", "3456p"):
+        raise ValueError("ai_resize_resolution_unavailable")
+    if mode != "normal" and (len(clips) != 1 or clips[0].get("mediaType", "video") != "video"):
+        raise ValueError("ai_requires_single_video_clip")
+    return mode, model
+
+
 def visual_effect_filters(effect: str, width: int, height: int) -> list[str]:
     """Map editor effect IDs to FFmpeg filters; reject unknown IDs explicitly."""
     filters = {
@@ -490,14 +563,11 @@ def visual_effect_filters(effect: str, width: int, height: int) -> list[str]:
 def render(job, work: Path):
     plan = job["project_snapshot"]
     validate_source_manifest(plan, job["owner_id"])
-    ai_enhancement = plan.get("aiEnhancement", False)
-    if not isinstance(ai_enhancement, bool):
-        raise ValueError("invalid_ai_enhancement_flag")
-    ai_total_seconds = 0.0
     clips = plan.get("clips")
     if not isinstance(clips, list) or not 1 <= len(clips) <= 24:
         raise ValueError("unsupported_project_clip_count")
     resolution = job["resolution"]
+    enhancement_mode, ai_model = resolve_ai_selection(plan, clips, resolution)
     edge = {"480p": 480, "540p": 540, "720p": 720, "1080p": 1080, "1440p": 1440, "1620p": 1620, "2160p": 2160, "2880p": 2880, "3456p": 3456, "4320p": 4320}.get(resolution)
     if edge is None: raise ValueError("unsupported_resolution")
     if resolution in ("2880p", "3456p", "4320p"):
@@ -524,6 +594,7 @@ def render(job, work: Path):
     trim_ranges = []
     input_args = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-loglevel", "error"]
     probe_info = []
+    ai_generated_dimensions = None
     for i, clip in enumerate(clips):
         key = clip.get("path", "")
         if not key.startswith(job["owner_id"] + "/"):
@@ -544,40 +615,60 @@ def render(job, work: Path):
         start, end = clip_trim_range(clip, duration)
         if end <= start or end - start > MAX_DURATION: raise ValueError("invalid_trim_range")
         speed = safe_number(clip.get("speed", 1.0), .25, 4.0, "speed")
-        if ai_enhancement:
+        if enhancement_mode != "normal":
             if media_type != "video":
-                raise ValueError("espcn_requires_video_clips")
-            from espcn import validate_espcn_source, upscale_video
+                raise ValueError("cloud_ai_photo_export_not_supported")
             try:
                 source_fps = float(Fraction(str(v.get("avg_frame_rate") or v.get("r_frame_rate") or "24/1")))
             except (ValueError, ZeroDivisionError):
-                raise ValueError("espcn_invalid_source_frame_rate")
-            validate_espcn_source(int(v.get("width", 0)), int(v.get("height", 0)), source_fps, duration)
-            ai_total_seconds += duration
-            if ai_total_seconds > 10.0:
-                raise ValueError("espcn_total_source_limit_10_seconds")
-            enhanced_path = work / f"clip_{i}_espcn.mp4"
-            model_path = work / "espcn_x3.tflite"
-            upscale_video(
-                path, enhanced_path, int(v["width"]), int(v["height"]),
-                source_fps, duration, model_path,
-                progress=lambda p, jid=job["id"]: update_job(jid, progress=p),
-            )
+                source_fps = 24.0
+            source_width, source_height = int(v.get("width", 0)), int(v.get("height", 0))
+            if duration <= 0 or duration > MAX_DURATION:
+                raise ValueError("ai_clip_limit_180_seconds")
+            if ai_model == "espcn":
+                from espcn import validate_espcn_source, upscale_video
+                validate_espcn_source(source_width, source_height, source_fps, duration)
+                enhanced_path = work / f"clip_{i}_espcn.mp4"
+                upscale_video(
+                    path, enhanced_path, source_width, source_height, source_fps, duration,
+                    work / "espcn_x3.tflite",
+                    progress=lambda p, jid=job["id"]: update_job(jid, progress=p),
+                )
+                ai_generated_dimensions = (source_width * 3, source_height * 3)
+            else:
+                ensure_ai_model_runtime(ai_model)
+                if ai_model == "vrt":
+                    from temporal_models import upscale_video
+                    enhanced_path = work / "vrt_enhanced.mp4"
+                    ai_generated_dimensions = upscale_video(
+                        path, enhanced_path, source_width, source_height, source_fps, duration,
+                        Path(tempfile.gettempdir()) / "vyntra-model-cache" / "vrt",
+                    )
+                elif ai_model == "basicvsr":
+                    from temporal_models import upscale_basicvsr_video
+                    enhanced_path = work / "basicvsr_enhanced.mp4"
+                    ai_generated_dimensions = upscale_basicvsr_video(
+                        path, enhanced_path, source_width, source_height, source_fps, duration,
+                        Path(tempfile.gettempdir()) / "vyntra-model-cache" / "basicvsr",
+                    )
+                else:
+                    from ai_image_models import upscale_video
+                    enhanced_path = work / f"{ai_model}_enhanced.mp4"
+                    ai_generated_dimensions = upscale_video(
+                        path, enhanced_path, ai_model, source_width, source_height, source_fps, duration,
+                        Path(tempfile.gettempdir()) / "vyntra-model-cache",
+                    )
             path = enhanced_path
-            input_args[-1] = str(path)  # Replace the just-added source input with the AI-enhanced intermediate.
             meta = probe(path)
             v = next((s for s in meta.get("streams", []) if s.get("codec_type") == "video"), None)
             if not v:
-                raise RuntimeError("espcn_output_has_no_video")
+                raise RuntimeError("ai_output_has_no_video")
         reverse = clip.get("reverse", False)
         if not isinstance(reverse, bool): raise ValueError("invalid_reverse")
         speed_segments = clip_speed_segments(clip, (end-start)*1000)
         if reverse and clip.get("speedCurve"):
             raise ValueError("reverse_with_speed_curve_unsupported")
-        if media_type == "image":
-            input_args += ["-loop", "1", "-t", str(end-start), "-i", str(path)]
-        else:
-            input_args += ["-ss", str(start), "-t", str(end-start), "-i", str(path)]
+        append_clip_input(input_args, path, start, end, media_type == "image")
         freeze_ms = safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")
         local.append(path); clip_lengths.append(speed_curve_duration(speed_segments) + freeze_ms/1000); probe_info.append((v, media_type == "video" and any(s.get("codec_type") == "audio" for s in meta.get("streams", [])))); trim_ranges.append((start, end))
     if sum(clip_lengths) > MAX_DURATION: raise ValueError("project_duration_limit")
@@ -870,7 +961,7 @@ def render(job, work: Path):
         encoder_args += ["-b:v", f"{bitrate}k", "-maxrate", f"{int(bitrate * 1.25)}k", "-bufsize", f"{bitrate * 2}k"]
     cmd = input_args + ["-filter_complex", ";".join(filters), "-map", video_label, "-map", audio_label] + encoder_args + [
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)]
-    update_job(job["id"], status="processing", progress=10 if ai_enhancement else 1, started_at=job.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    update_job(job["id"], status="processing", progress=10 if enhancement_mode != "normal" else 1, started_at=job.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     stderr_path = work / "ffmpeg.stderr"
     with stderr_path.open("w+b") as stderr_file:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_file, text=True, bufsize=1)
@@ -880,7 +971,7 @@ def render(job, work: Path):
             if line.startswith("out_time_ms="):
                 try:
                     done = int(line.split("=", 1)[1].strip()) // 1000
-                    progress = min(94, max(10 if ai_enhancement else 1, int((10 if ai_enhancement else 0) + done * (84 if ai_enhancement else 94) / max(1, duration_ms))))
+                    progress = min(94, max(10 if enhancement_mode != "normal" else 1, int((10 if enhancement_mode != "normal" else 0) + done * (84 if enhancement_mode != "normal" else 94) / max(1, duration_ms))))
                     update_job(job["id"], progress=progress)
                 except ValueError: pass
             # Worker restarts and cancellation are observed through the job record.
@@ -906,7 +997,7 @@ def render(job, work: Path):
     expected_duration = sum(clip_lengths) - sum(duration for _, duration in active_transitions)
     if output_duration <= 0 or abs(output_duration - expected_duration) > max(1.0, len(clips) * 0.15):
         raise RuntimeError("output_verification_failed:duration")
-    return out, {"width": width, "height": height, "videoCodec": video.get("codec_name"), "durationSeconds": output_duration, "bytes": out.stat().st_size}
+    return out, {"width": width, "height": height, "videoCodec": video.get("codec_name"), "durationSeconds": output_duration, "bytes": out.stat().st_size, "enhancementMode": enhancement_mode, "aiModel": ai_model if enhancement_mode != "normal" else None, "aiGeneratedWidth": ai_generated_dimensions[0] if ai_generated_dimensions else None, "aiGeneratedHeight": ai_generated_dimensions[1] if ai_generated_dimensions else None}
 
 def main():
     print("Vyntra worker ready", WORKER_ID, flush=True)

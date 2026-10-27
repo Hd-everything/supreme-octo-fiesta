@@ -15,7 +15,7 @@ MODEL_SHA256 = "e1607d2ce4f02b2f03b74fc5699cf709570e9d3d407dd9e69e9f16806bfd77d5
 TILE = 64
 SCALE = 3
 MAX_SOURCE_EDGE = 854
-MAX_CLIP_SECONDS = 10.0
+MAX_CLIP_SECONDS = 180.0
 MAX_INPUT_FPS = 24.0
 
 
@@ -25,7 +25,7 @@ def validate_espcn_source(width: int, height: int, fps: float, duration: float) 
     if fps <= 0 or fps > MAX_INPUT_FPS:
         raise ValueError("espcn_frame_rate_limit_24fps")
     if duration <= 0 or duration > MAX_CLIP_SECONDS:
-        raise ValueError("espcn_clip_limit_10_seconds")
+        raise ValueError("espcn_clip_limit_180_seconds")
 
 
 def load_model(model_path: Path):
@@ -55,6 +55,37 @@ def load_model(model_path: Path):
     if input_detail["dtype"] != np.float32 or output_detail["dtype"] != np.float32:
         raise RuntimeError("espcn_model_dtype_mismatch")
     return interpreter, input_detail["index"], output_detail["index"]
+
+
+def upscale_image(source: Path, destination: Path, model_path: Path) -> None:
+    """Enhance one still image with ESPCN and save the actual 3x image result."""
+    image = Image.open(source).convert("RGB")
+    width, height = image.size
+    if width < 1 or height < 1 or max(width, height) > MAX_SOURCE_EDGE or min(width, height) > 480:
+        raise ValueError("espcn_source_must_be_480p_or_lower")
+    interpreter, input_index, output_index = load_model(model_path)
+    try:
+        frame = np.asarray(image, dtype=np.uint8)
+        enlarged = np.empty((height * SCALE, width * SCALE, 3), dtype=np.uint8)
+        for top in range(0, height, TILE):
+            tile_h = min(TILE, height - top)
+            for left in range(0, width, TILE):
+                tile_w = min(TILE, width - left)
+                tile = frame[top:top+tile_h, left:left+tile_w]
+                if tile_h != TILE or tile_w != TILE:
+                    tile = np.asarray(Image.fromarray(tile).resize((TILE, TILE), Image.Resampling.BICUBIC))
+                tensor = np.transpose(tile.astype(np.float32) / 255.0, (2, 0, 1))[None, ...]
+                interpreter.set_tensor(input_index, tensor)
+                interpreter.invoke()
+                result = interpreter.get_tensor(output_index)[0]
+                rgb = np.transpose(result, (1, 2, 0))
+                rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+                if tile_h != TILE or tile_w != TILE:
+                    rgb = np.asarray(Image.fromarray(rgb).resize((tile_w*SCALE, tile_h*SCALE), Image.Resampling.BICUBIC))
+                enlarged[top*SCALE:(top+tile_h)*SCALE, left*SCALE:(left+tile_w)*SCALE] = rgb
+        Image.fromarray(enlarged, mode="RGB").save(destination, format="PNG")
+    finally:
+        interpreter = None
 
 
 def _read_exact(stream, size: int) -> bytes:
