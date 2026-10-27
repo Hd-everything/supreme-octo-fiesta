@@ -2,7 +2,8 @@
 """Vyntra cloud render worker. Runs outside Supabase Edge Functions."""
 from __future__ import annotations
 
-import hashlib, importlib, json, os, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
+import hashlib, hmac, importlib, json, os, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request, uuid
+import http.client
 from pathlib import Path
 import re
 from fractions import Fraction
@@ -19,6 +20,9 @@ MAX_SOURCE_FILE_BYTES = 200 * 1024 * 1024
 MAX_PROJECT_SOURCE_BYTES = 200 * 1024 * 1024
 OUTPUT_PART_BYTES = 48_000_000
 MAX_OUTPUT_BYTES = max(OUTPUT_PART_BYTES, int(os.getenv("VYNTRA_MAX_OUTPUT_BYTES", "200000000")))
+RELEASE_TTL_HOURS = min(168, max(1, int(os.getenv("VYNTRA_RELEASE_TTL_HOURS", "6"))))
+RELEASE_REPOSITORY = os.getenv("VYNTRA_RELEASE_REPOSITORY", "fasmora-continue/here")
+RELEASE_TOKEN = os.getenv("VYNTRA_RELEASE_TOKEN", "")
 SUPPORTED_AI_MODELS = ("espcn", "edsr", "swinir", "realesrgan", "basicvsr", "vrt")
 AI_REQUIREMENTS_BY_MODEL = {
     "edsr": "requirements-ai-image.txt",
@@ -29,7 +33,8 @@ AI_REQUIREMENTS_BY_MODEL = {
 }
 ONESHOT = os.getenv("VYNTRA_ONESHOT", "false").lower() == "true"
 ENABLE_8K = os.getenv("VYNTRA_ENABLE_8K", "false").lower() == "true"
-MAX_JOBS = max(1, int(os.getenv("VYNTRA_MAX_CONCURRENT_JOBS", "1")))
+MAX_JOBS = min(100, max(1, int(os.getenv("VYNTRA_MAX_CONCURRENT_JOBS", "100"))))
+MAX_JOBS_PER_REPOSITORY = min(20, max(1, int(os.getenv("VYNTRA_MAX_JOBS_PER_REPOSITORY", "20"))))
 
 def safe_ffmpeg_diagnostic(stderr: str, work_dir: Path | None = None) -> str:
     """Return a bounded FFmpeg diagnostic with secrets, URLs, and temp paths removed."""
@@ -70,11 +75,76 @@ def api(path: str, method="GET", payload=None, headers=None, raw=False):
         body = response.read()
         return json.loads(body) if body and not raw else body
 
+
+def is_retryable_job_error(job, exc, raw_code: str) -> bool:
+    """Jobs whose receipt deleted their remote inputs cannot be requeued safely."""
+    if job.get("source_cleanup_completed_at"):
+        return False
+    http_status = getattr(getattr(exc, "response", None), "status_code", None)
+    transient_http = http_status is None or http_status >= 500 or http_status == 429
+    return (
+        isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
+        or (exc.__class__.__module__.startswith("requests.") and transient_http)
+        or raw_code == "ffmpeg_failed"
+    )
+
 def update_job(job_id, **values):
     # Refresh the lease on progress updates so a live FFmpeg render is not marked dead.
     values.setdefault("updated_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job_id),
         "PATCH", values, {"Prefer": "return=minimal"})
+
+
+def report_render_completed(job, output_path: str, metadata: dict):
+    """Let Supabase validate the private release asset before exposing completion."""
+    job_id = str(uuid.UUID(str(job["id"])))
+    asset_id = int(metadata.get("assetId", 0))
+    output_bytes = int(metadata.get("bytes", 0))
+    digest = str(metadata.get("sha256", "")).lower()
+    if asset_id < 1 or output_bytes < 1 or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError("release_output_manifest_invalid")
+    signature_payload = f"vyntra-output-complete:v1:{job_id}:{asset_id}:{output_bytes}:{digest}".encode()
+    signature = hmac.new(SERVICE_KEY.encode(), signature_payload, hashlib.sha256).hexdigest()
+    payload = json.dumps({"jobId": job_id, "outputPath": output_path, "outputMetadata": metadata}).encode()
+    request = urllib.request.Request(
+        SUPABASE_URL + "/functions/v1/vyntra-render-complete",
+        data=payload,
+        headers={
+            "apikey": SERVICE_KEY,
+            "Authorization": f"Bearer {SERVICE_KEY}",
+            "x-vyntra-completion-signature": signature,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                result = json.loads(response.read())
+                if result.get("completed") is not True:
+                    raise RuntimeError("release_completion_rejected")
+                job.update(status="completed", progress=100, output_path=output_path, output_metadata=metadata)
+                return
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 and exc.code != 429:
+                raise RuntimeError(f"release_completion_http_{exc.code}") from None
+            if attempt == 2:
+                raise RuntimeError(f"release_completion_http_{exc.code}") from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 2:
+                raise RuntimeError("release_completion_delivery_failed") from None
+        if attempt < 2:
+            time.sleep(1 + attempt)
+    try:
+        current = api(
+            "/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job_id) +
+            "&select=status,output_path,output_metadata"
+        )
+        if current and current[0].get("status") == "completed" and current[0].get("output_path") == output_path:
+            job.update(status="completed", progress=100, output_path=output_path, output_metadata=metadata)
+            return
+    except Exception:
+        pass
 
 def claim_render_job(target_job_id=None):
     if target_job_id:
@@ -82,23 +152,10 @@ def claim_render_job(target_job_id=None):
             target_job_id = str(uuid.UUID(target_job_id))
         except (ValueError, TypeError, AttributeError):
             raise ValueError("invalid_dispatched_job_id")
-        current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(target_job_id) + "&select=id,status,attempts,started_at")
-        if not current or current[0].get("status") != "queued":
-            return None
-        row = current[0]
-        if int(row.get("attempts", 0)) >= 3:
-            return None
-        started_at = row.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        claimed = api(
-            "/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(target_job_id) + "&status=eq.queued",
-            "PATCH",
-            {"status": "processing", "progress": 0, "worker_id": WORKER_ID,
-             "started_at": started_at, "attempts": int(row.get("attempts", 0)) + 1,
-             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-            {"Prefer": "return=representation"},
-        )
-        return claimed[0] if claimed else None
-    claimed = api("/rest/v1/rpc/vyntra_claim_render_job", "POST", {"p_worker_id": WORKER_ID})
+    claimed = api("/rest/v1/rpc/vyntra_claim_render_job", "POST", {
+        "p_worker_id": WORKER_ID,
+        "p_target_job_id": target_job_id,
+    })
     return claimed[0] if isinstance(claimed, list) and claimed else None
 
 def storage_download(object_path: str, destination: Path):
@@ -115,14 +172,41 @@ def storage_download(object_path: str, destination: Path):
             if total > MAX_INPUT_BYTES: raise ValueError("input_too_large")
             out.write(chunk)
 
-def download_source_asset(object_path: str, parts, owner_id: str, destination: Path):
+def _verify_source_file(path: Path, object_path: str, expected_bytes: int | None, expected_sha256: str | None, manifest: dict, verified_parts: dict):
+    expected = manifest.get(object_path)
+    if expected is not None:
+        if expected_bytes is not None and expected.get("bytes") != expected_bytes:
+            raise ValueError("source_part_manifest_mismatch")
+        expected_bytes = expected.get("bytes")
+        manifest_sha = expected.get("sha256")
+        if expected_sha256 and manifest_sha and expected_sha256 != manifest_sha:
+            raise ValueError("source_part_manifest_mismatch")
+        expected_sha256 = manifest_sha or expected_sha256
+    actual_bytes = path.stat().st_size
+    if expected_bytes is not None and actual_bytes != expected_bytes:
+        raise ValueError("source_part_size_mismatch")
+    if expected_sha256:
+        if not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+            raise ValueError("source_checksum_invalid")
+        actual_sha256 = _sha256_file(path)
+        if actual_sha256 != expected_sha256:
+            raise ValueError("source_checksum_mismatch")
+    else:
+        actual_sha256 = _sha256_file(path)
+    verified_parts[object_path] = {"path": object_path, "bytes": actual_bytes, "sha256": actual_sha256}
+
+
+def download_source_asset(object_path: str, parts, owner_id: str, destination: Path, manifest=None, verified_parts=None):
     """Download a normal source object or reconstruct a byte-split upload."""
+    manifest = manifest if isinstance(manifest, dict) else {}
+    verified_parts = verified_parts if isinstance(verified_parts, dict) else {}
     if not isinstance(object_path, str) or not object_path.startswith(owner_id + "/"):
         raise ValueError("media_not_owned")
     if parts is None:
         storage_download(object_path, destination)
         if destination.stat().st_size > MAX_SOURCE_FILE_BYTES:
             raise ValueError("source_file_too_large")
+        _verify_source_file(destination, object_path, None, None, manifest, verified_parts)
         return
     if not isinstance(parts, list) or not 2 <= len(parts) <= 6:
         raise ValueError("invalid_source_parts")
@@ -146,9 +230,7 @@ def download_source_asset(object_path: str, parts, owner_id: str, destination: P
                 raise ValueError("source_file_too_large")
             temp_part = destination.with_name(destination.name + f".part{index:03d}")
             storage_download(part_path, temp_part)
-            actual_bytes = temp_part.stat().st_size
-            if actual_bytes != expected_bytes:
-                raise ValueError("source_part_size_mismatch")
+            _verify_source_file(temp_part, part_path, expected_bytes, part.get("sha256"), manifest, verified_parts)
             with temp_part.open("rb") as incoming, destination.open("ab") as assembled:
                 shutil.copyfileobj(incoming, assembled, 1024 * 1024)
             temp_part.unlink(missing_ok=True)
@@ -171,14 +253,73 @@ def validate_source_manifest(plan, owner_id: str):
         if not isinstance(part, dict):
             raise ValueError("invalid_source_parts")
         path, size = part.get("path"), part.get("bytes")
+        checksum = part.get("sha256")
         if (not isinstance(path, str) or not path.startswith(owner_id + "/") or
                 not isinstance(size, int) or size < 1 or size > SOURCE_PART_BYTES):
             raise ValueError("invalid_source_parts")
-        if path in sizes and sizes[path] != size:
-            raise ValueError("source_part_size_mismatch")
-        sizes[path] = size
-    if sum(sizes.values()) > MAX_PROJECT_SOURCE_BYTES:
+        if checksum is not None and (not isinstance(checksum, str) or not re.fullmatch(r"[a-f0-9]{64}", checksum)):
+            raise ValueError("source_checksum_invalid")
+        item = {"bytes": size, "sha256": checksum}
+        if path in sizes and sizes[path] != item:
+            raise ValueError("source_part_manifest_mismatch")
+        sizes[path] = item
+    if sum(item["bytes"] for item in sizes.values()) > MAX_PROJECT_SOURCE_BYTES:
         raise ValueError("project_source_size_limit")
+    return sizes
+
+
+def acknowledge_source_receipt(job, expected_manifest: dict, verified_parts: dict):
+    """Ask the control plane to delete inputs only after every part is hash-verified."""
+    expected_paths = set(expected_manifest)
+    if not expected_paths or set(verified_parts) != expected_paths:
+        raise ValueError("source_receipt_manifest_incomplete")
+    if any(not expected_manifest[path].get("sha256") for path in expected_paths):
+        return False  # Legacy jobs keep source objects until the rendered output is safely stored.
+    expected = [
+        {"path": path, "bytes": expected_manifest[path]["bytes"], "sha256": expected_manifest[path]["sha256"]}
+        for path in sorted(expected_paths)
+    ]
+    actual = [verified_parts[path] for path in sorted(expected_paths)]
+    if actual != expected:
+        raise ValueError("source_receipt_manifest_mismatch")
+    job_paths = set(job.get("source_object_paths") or [])
+    if job_paths != expected_paths:
+        raise ValueError("source_receipt_path_mismatch")
+    manifest_digest = hashlib.sha256(json.dumps(expected, separators=(",", ":")).encode()).hexdigest()
+    signature_payload = f"vyntra-source-receipt:v1:{job['id']}:{manifest_digest}".encode()
+    signature = hmac.new(SERVICE_KEY.encode(), signature_payload, hashlib.sha256).hexdigest()
+    payload = json.dumps({"jobId": job["id"], "receivedParts": actual, "receiptSha256": manifest_digest}).encode()
+    request = urllib.request.Request(
+        SUPABASE_URL + "/functions/v1/vyntra-render-receipt",
+        data=payload,
+        headers={
+            "apikey": SERVICE_KEY,
+            "Authorization": f"Bearer {SERVICE_KEY}",
+            "x-vyntra-receipt-signature": signature,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                result = json.loads(response.read())
+                if result.get("acknowledged") is not True:
+                    raise RuntimeError("source_receipt_rejected")
+                job["source_object_paths"] = []
+                job["source_cleanup_completed_at"] = result.get("cleanedAt")
+                return True
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 and exc.code != 429:
+                raise RuntimeError(f"source_receipt_http_{exc.code}") from None
+            if attempt == 2:
+                raise RuntimeError(f"source_receipt_http_{exc.code}") from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 2:
+                raise RuntimeError("source_receipt_delivery_failed") from None
+        if attempt < 2:
+            time.sleep(1 + attempt)
+    return False
 
 def output_storage_config(job):
     """Return the storage endpoint for this job's rendered output."""
@@ -374,6 +515,205 @@ def upload_output_parts(source: Path, job, metadata: dict, work: Path) -> tuple[
         print("retrying the complete output in primary storage", flush=True)
         return _upload_output_parts_on_current_store(source, job, metadata, work)
 
+
+def _release_request(path: str, method="GET", payload=None):
+    if not RELEASE_TOKEN:
+        raise RuntimeError("github_release_not_configured")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", RELEASE_REPOSITORY):
+        raise RuntimeError("github_release_repository_invalid")
+    body = json.dumps(payload).encode() if payload is not None else None
+    request = urllib.request.Request(
+        "https://api.github.com/repos/" + RELEASE_REPOSITORY + path,
+        data=body,
+        headers={
+            "Authorization": "Bearer " + RELEASE_TOKEN,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            **({"Content-Type": "application/json"} if body is not None else {}),
+        },
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise RuntimeError(f"github_release_http_{exc.code}") from None
+
+
+def _release_upload(source: Path, upload_url: str, asset_name: str, heartbeat=None):
+    parsed = urllib.parse.urlsplit(upload_url.split("{", 1)[0])
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("name", asset_name))
+    target = parsed.path + "?" + urllib.parse.urlencode(query)
+    connection = http.client.HTTPSConnection(parsed.hostname, timeout=600)
+    try:
+        connection.putrequest("POST", target)
+        connection.putheader("Authorization", "Bearer " + RELEASE_TOKEN)
+        connection.putheader("Accept", "application/vnd.github+json")
+        connection.putheader("X-GitHub-Api-Version", "2022-11-28")
+        connection.putheader("Content-Type", "video/mp4")
+        connection.putheader("Content-Length", str(source.stat().st_size))
+        connection.endheaders()
+        last_heartbeat = time.monotonic()
+        with source.open("rb") as rendered:
+            while chunk := rendered.read(1024 * 1024):
+                connection.send(chunk)
+                if heartbeat and time.monotonic() - last_heartbeat >= 15:
+                    heartbeat()
+                    last_heartbeat = time.monotonic()
+        response = connection.getresponse()
+        response_body = response.read()
+        if response.status not in (201, 200):
+            raise RuntimeError(f"github_release_upload_http_{response.status}")
+        return json.loads(response_body)
+    finally:
+        connection.close()
+
+
+def _sha256_file(source: Path) -> str:
+    digest = hashlib.sha256()
+    with source.open("rb") as rendered:
+        for chunk in iter(lambda: rendered.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def upload_output_release(source: Path, job, metadata: dict, work: Path) -> tuple[str, dict]:
+    """Store one verified, retry-safe MP4 asset in the configured private release repo."""
+    total_bytes = source.stat().st_size
+    if total_bytes <= 0:
+        raise ValueError("empty_render_output")
+    if total_bytes > MAX_OUTPUT_BYTES:
+        raise ValueError("output_exceeds_free_storage_limit")
+    if not RELEASE_TOKEN:
+        raise RuntimeError("github_release_not_configured")
+
+    repository = _release_request("")
+    if not isinstance(repository, dict) or repository.get("private") is not True:
+        raise RuntimeError("github_release_repository_must_be_private")
+
+    job_id = str(uuid.UUID(str(job["id"])))
+    tag = "vyntra-render-" + job_id
+    release = _release_request("/releases/tags/" + urllib.parse.quote(tag, safe=""))
+    if release is None:
+        release = _release_request("/releases", "POST", {
+            "tag_name": tag,
+            "name": "Vyntra render " + job_id,
+            "body": "Temporary Vyntra cloud-render output. Deleted after verified delivery.",
+            "draft": False,
+            "prerelease": True,
+            "make_latest": "false",
+        })
+    if not isinstance(release, dict) or not isinstance(release.get("id"), int):
+        raise RuntimeError("github_release_create_failed")
+
+    digest = _sha256_file(source)
+    asset_name = f"vyntra-{job_id}-{digest[:16]}.mp4"
+    assets = _release_request(f"/releases/{release['id']}/assets") or []
+    if not isinstance(assets, list):
+        raise RuntimeError("github_release_assets_invalid")
+    asset = next((item for item in assets if item.get("name") == asset_name and item.get("size") == total_bytes and item.get("state") == "uploaded"), None)
+    if asset is None:
+        for incomplete in assets:
+            if incomplete.get("name") == asset_name:
+                _release_request(f"/releases/assets/{incomplete['id']}", "DELETE")
+        try:
+            asset = _release_upload(
+                source,
+                release["upload_url"],
+                asset_name,
+                heartbeat=lambda: update_job(job_id, progress=98),
+            )
+        except Exception:
+            leftovers = _release_request(f"/releases/{release['id']}/assets") or []
+            for leftover in leftovers if isinstance(leftovers, list) else []:
+                if str(leftover.get("name", "")).startswith(f"vyntra-{job_id}-"):
+                    _release_request(f"/releases/assets/{leftover['id']}", "DELETE")
+            remaining = _release_request(f"/releases/{release['id']}/assets") or []
+            if not remaining:
+                _release_request(f"/releases/{release['id']}", "DELETE")
+                _release_request(f"/git/refs/tags/{urllib.parse.quote(tag, safe='')}", "DELETE")
+            raise
+    if not isinstance(asset, dict) or not isinstance(asset.get("id"), int) or asset.get("size") != total_bytes or asset.get("state") != "uploaded":
+        raise RuntimeError("github_release_asset_verification_failed")
+
+    # A prior attempt may have uploaded a different output for this job. Keep the
+    # previous asset until its replacement is fully uploaded and verified.
+    for old_asset in assets:
+        if old_asset.get("id") != asset["id"] and str(old_asset.get("name", "")).startswith(f"vyntra-{job_id}-"):
+            _release_request(f"/releases/assets/{old_asset['id']}", "DELETE")
+
+    output_metadata = {
+        **metadata,
+        "provider": "github_release",
+        "repository": RELEASE_REPOSITORY,
+        "releaseId": release["id"],
+        "releaseTag": tag,
+        "assetId": asset["id"],
+        "assetName": asset_name,
+        "bytes": total_bytes,
+        "sha256": digest,
+    }
+    output_path = f"github-release:{release['id']}:{asset['id']}"
+    update_job(job_id, status="finalizing", progress=99, output_path=output_path, output_metadata=output_metadata)
+    job["output_path"] = output_path
+    job["output_metadata"] = output_metadata
+    current = api("/rest/v1/vyntra_render_jobs?id=eq." + urllib.parse.quote(job_id) + "&select=status")
+    if current and current[0]["status"] == "cancel_requested":
+        _release_request(f"/releases/assets/{asset['id']}", "DELETE")
+        _release_request(f"/releases/{release['id']}", "DELETE")
+        _release_request(f"/git/refs/tags/{urllib.parse.quote(tag, safe='')}", "DELETE")
+        raise InterruptedError("cancelled")
+    return output_path, output_metadata
+
+
+def cleanup_release_output(job):
+    metadata = job.get("output_metadata") if isinstance(job, dict) else None
+    if not isinstance(metadata, dict) or metadata.get("provider") != "github_release":
+        return False
+    if metadata.get("repository") != RELEASE_REPOSITORY:
+        raise RuntimeError("github_release_metadata_invalid")
+    release_id = int(metadata.get("releaseId", 0))
+    asset_id = int(metadata.get("assetId", 0))
+    tag = str(metadata.get("releaseTag", ""))
+    if release_id < 1 or asset_id < 1 or not re.fullmatch(r"vyntra-render-[0-9a-f-]{36}", tag):
+        raise RuntimeError("github_release_metadata_invalid")
+    _release_request(f"/releases/assets/{asset_id}", "DELETE")
+    assets = _release_request(f"/releases/{release_id}/assets") or []
+    if not isinstance(assets, list):
+        raise RuntimeError("github_release_assets_invalid")
+    if not assets:
+        _release_request(f"/releases/{release_id}", "DELETE")
+        _release_request(f"/git/refs/tags/{urllib.parse.quote(tag, safe='')}", "DELETE")
+    update_job(job["id"], output_path=None, output_metadata=None)
+    return True
+
+
+def cleanup_expired_release_outputs():
+    cutoff = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(time.time() - RELEASE_TTL_HOURS * 3600),
+    )
+    query = urllib.parse.urlencode({
+        "status": "in.(completed,failed)",
+        "output_metadata->>provider": "eq.github_release",
+        "completed_at": "lt." + cutoff,
+        "select": "id,status,output_metadata",
+        "limit": "100",
+    })
+    expired = api("/rest/v1/vyntra_render_jobs?" + query)
+    for job in expired if isinstance(expired, list) else []:
+        try:
+            cleanup_release_output(job)
+            if job.get("status") == "completed":
+                update_job(job["id"], status="failed", progress=0, error_code="output_expired")
+            print("removed expired cloud render release", job.get("id"), flush=True)
+        except Exception as exc:
+            print("expired release cleanup deferred", job.get("id"), type(exc).__name__, flush=True)
+
 def probe(path: Path):
     raw = subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)], timeout=45)
     return json.loads(raw)
@@ -562,7 +902,7 @@ def visual_effect_filters(effect: str, width: int, height: int) -> list[str]:
 
 def render(job, work: Path):
     plan = job["project_snapshot"]
-    validate_source_manifest(plan, job["owner_id"])
+    source_manifest = validate_source_manifest(plan, job["owner_id"])
     clips = plan.get("clips")
     if not isinstance(clips, list) or not 1 <= len(clips) <= 24:
         raise ValueError("unsupported_project_clip_count")
@@ -589,6 +929,42 @@ def render(job, work: Path):
     if codec == "h265" and "libx265" not in encoders: raise ValueError("encoder_unavailable:h265")
     if codec not in ("h264", "h265"): raise ValueError("unsupported_codec")
 
+    # Download and verify every source before acknowledging receipt. Rendering,
+    # AI enhancement, and FFmpeg work begin only after the control plane has
+    # accepted the receipt and deleted the now-unneeded Storage objects.
+    source_dir = work / "verified_sources"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    verified_parts = {}
+    clip_sources = {}
+    for index, clip in enumerate(clips):
+        key = clip.get("path", "")
+        if not key.startswith(job["owner_id"] + "/"):
+            raise ValueError("media_not_owned")
+        path = source_dir / f"clip_{index}.source"
+        download_source_asset(key, clip.get("sourceParts"), job["owner_id"], path, source_manifest, verified_parts)
+        clip_sources[index] = path
+    music_key = plan.get("musicPath")
+    music_source = None
+    if music_key:
+        if not isinstance(music_key, str) or not music_key.startswith(job["owner_id"] + "/"):
+            raise ValueError("media_not_owned")
+        music_source = source_dir / "music.source"
+        download_source_asset(music_key, plan.get("musicSourceParts"), job["owner_id"], music_source, source_manifest, verified_parts)
+    image_sources = {}
+    for index, overlay in enumerate(plan.get("imageOverlays", [])):
+        key = overlay.get("path", "")
+        if not isinstance(key, str) or not key.startswith(job["owner_id"] + "/"):
+            raise ValueError("media_not_owned")
+        suffix = Path(key).suffix.lower()
+        if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+            raise ValueError("unsupported_image_format")
+        image_path = source_dir / f"image_overlay_{index}{suffix}"
+        download_source_asset(key, overlay.get("sourceParts"), job["owner_id"], image_path, source_manifest, verified_parts)
+        image_sources[index] = image_path
+
+    if source_manifest is not None:
+        acknowledge_source_receipt(job, source_manifest, verified_parts)
+
     local = []
     clip_lengths = []
     trim_ranges = []
@@ -599,8 +975,7 @@ def render(job, work: Path):
         key = clip.get("path", "")
         if not key.startswith(job["owner_id"] + "/"):
             raise ValueError("media_not_owned")
-        path = work / f"clip_{i}.media"
-        download_source_asset(key, clip.get("sourceParts"), job["owner_id"], path)
+        path = clip_sources[i]
         meta = probe(path)
         v = next((s for s in meta.get("streams", []) if s.get("codec_type") == "video"), None)
         if not v: raise ValueError("source_has_no_video")
@@ -672,12 +1047,8 @@ def render(job, work: Path):
         freeze_ms = safe_number(clip.get("freezeFrameMs", 0), 0, 10000, "freeze_frame")
         local.append(path); clip_lengths.append(speed_curve_duration(speed_segments) + freeze_ms/1000); probe_info.append((v, media_type == "video" and any(s.get("codec_type") == "audio" for s in meta.get("streams", [])))); trim_ranges.append((start, end))
     if sum(clip_lengths) > MAX_DURATION: raise ValueError("project_duration_limit")
-    music_path = None
-    music = plan.get("musicPath")
-    if music:
-        if not music.startswith(job["owner_id"] + "/"): raise ValueError("media_not_owned")
-        music_path = work / "music.media"
-        download_source_asset(music, plan.get("musicSourceParts"), job["owner_id"], music_path)
+    music_path = music_source
+    if music_path:
         input_args += ["-i", str(music_path)]
 
     first = probe_info[0][0]
@@ -916,8 +1287,7 @@ def render(job, work: Path):
         if not key.startswith(job["owner_id"] + "/"): raise ValueError("media_not_owned")
         suffix = Path(key).suffix.lower()
         if suffix not in (".png", ".jpg", ".jpeg", ".webp"): raise ValueError("unsupported_image_format")
-        image_path = work / f"overlay_{image_index}{suffix}"
-        download_source_asset(key, overlay.get("sourceParts"), job["owner_id"], image_path)
+        image_path = image_sources[image_index]
         input_args += ["-loop", "1", "-i", str(image_path)]
         image_inputs.append((len(clips) + (1 if music_path else 0) + image_index, overlay))
 
@@ -1003,6 +1373,7 @@ def main():
     print("Vyntra worker ready", WORKER_ID, flush=True)
     while True:
         try:
+            cleanup_expired_release_outputs()
             target_job_id = os.getenv("VYNTRA_TARGET_JOB_ID") if ONESHOT else None
             job = claim_render_job(target_job_id)
             if not job:
@@ -1012,14 +1383,15 @@ def main():
                 time.sleep(POLL_SECONDS); continue
             stage = "prepare"
             try:
-                storage_url, _, storage_bucket = output_storage_config(job)
-                output_route = "secondary" if storage_url != SUPABASE_URL else "primary"
-                print(f"job output route: {output_route} ({storage_bucket})", flush=True)
                 update_job(job["id"], status="processing", progress=0, worker_id=WORKER_ID)
-                stale_output_paths = job_output_paths(job)
-                if stale_output_paths:
-                    storage_remove(stale_output_paths, job)
-                    update_job(job["id"], output_path=None, output_metadata=None)
+                old_output_metadata = job.get("output_metadata")
+                if isinstance(old_output_metadata, dict) and old_output_metadata.get("provider") == "github_release":
+                    cleanup_release_output(job)
+                else:
+                    stale_output_paths = job_output_paths(job)
+                    if stale_output_paths:
+                        storage_remove(stale_output_paths, job)
+                        update_job(job["id"], output_path=None, output_metadata=None)
                 with tempfile.TemporaryDirectory(prefix="vyntra-render-") as directory:
                     stage = "render_and_verify"
                     output, metadata = render(job, Path(directory))
@@ -1028,9 +1400,9 @@ def main():
                         raise InterruptedError("cancelled")
                     update_job(job["id"], status="finalizing", progress=96)
                     stage = "upload_output_parts"
-                    output_path, metadata = upload_output_parts(output, job, metadata, Path(directory))
+                    output_path, metadata = upload_output_release(output, job, metadata, Path(directory))
                     stage = "complete_job_record"
-                    update_job(job["id"], status="completed", progress=100, output_path=output_path, output_metadata=metadata, completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), error_code=None)
+                    report_render_completed(job, output_path, metadata)
                     # Inputs are no longer needed once the verified output and
                     # completed state are persisted. Keep cleanup best-effort
                     # so an output remains deliverable during storage outages.
@@ -1049,13 +1421,7 @@ def main():
                 safe_message = safe_ffmpeg_diagnostic(message)
                 print("job failed", job.get("id"), "at", stage, type(exc).__name__, flush=True)
                 print("job error summary:", safe_message or "[no diagnostic output]", flush=True)
-                http_status = getattr(getattr(exc, "response", None), "status_code", None)
-                http_status_is_transient = http_status is None or http_status >= 500 or http_status == 429
-                retryable = (
-                    isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
-                    or (exc.__class__.__module__.startswith("requests.") and http_status_is_transient)
-                    or raw_code == "ffmpeg_failed"
-                )
+                retryable = is_retryable_job_error(job, exc, raw_code)
                 if int(job.get("attempts", 0)) < 3 and retryable:
                     update_job(job["id"], status="queued", error_code=code, progress=0)
                 else:

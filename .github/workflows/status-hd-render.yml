@@ -10,6 +10,8 @@ on:
   repository_dispatch:
     types:
       - vyntra_render_requested
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -62,15 +64,17 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           VYNTRA_STORAGE_BUCKET: vyntra-media
-          VYNTRA_OUTPUT_SUPABASE_URL: https://vfaakmxoeflzedwidlcl.supabase.co
-          VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY }}
-          VYNTRA_OUTPUT_BUCKET: vyntra-exports
+          VYNTRA_RELEASE_REPOSITORY: fasmora-continue/here
+          VYNTRA_RELEASE_TOKEN: ${{ secrets.VYNTRA_RELEASE_TOKEN }}
           VYNTRA_MAX_OUTPUT_BYTES: "200000000"
+          VYNTRA_MAX_CONCURRENT_JOBS: "100"
+          VYNTRA_MAX_JOBS_PER_REPOSITORY: "20"
+          VYNTRA_RELEASE_TTL_HOURS: "6"
           VYNTRA_ONESHOT: "true"
           VYNTRA_MAX_DURATION_SECONDS: "180"
           VYNTRA_MAX_INPUT_BYTES: "52428800"
           VYNTRA_ENABLE_8K: "false"
-          VYNTRA_WORKER_ID: github-actions-${{ github.run_id }}-${{ github.run_attempt }}
+          VYNTRA_WORKER_ID: ${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}
           VYNTRA_TARGET_JOB_ID: ${{ github.event.client_payload.job_id }}
         shell: bash
         run: |
@@ -83,8 +87,8 @@ jobs:
             echo "::error::Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY Actions secret."
             exit 1
           fi
-          if [[ -n "${VYNTRA_OUTPUT_SUPABASE_URL:-}" && -z "${VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY:-}" ]] || [[ -z "${VYNTRA_OUTPUT_SUPABASE_URL:-}" && -n "${VYNTRA_OUTPUT_SUPABASE_SERVICE_ROLE_KEY:-}" ]]; then
-            echo "::error::Configure both secondary output storage secrets, or leave both empty."
+          if [[ "${GITHUB_EVENT_NAME}" != "push" && -z "${VYNTRA_RELEASE_TOKEN:-}" ]]; then
+            echo "::error::Missing VYNTRA_RELEASE_TOKEN with Contents read/write access to fasmora-continue/here."
             exit 1
           fi
           test -x "$(command -v ffmpeg)"

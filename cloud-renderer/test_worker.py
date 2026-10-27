@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -90,27 +91,164 @@ class RenderLimitsTests(unittest.TestCase):
     def test_oneshot_is_off_by_default(self):
         self.assertFalse(worker.ONESHOT)
 
+    def test_worker_pool_limit_is_one_hundred_across_five_twenty_job_repositories(self):
+        self.assertEqual(worker.MAX_JOBS, 100)
+        self.assertEqual(worker.MAX_JOBS_PER_REPOSITORY, 20)
+
+
+class ReceiptRetrySafetyTests(unittest.TestCase):
+    def test_transient_failure_is_retryable_before_source_cleanup(self):
+        self.assertTrue(worker.is_retryable_job_error(
+            {"source_cleanup_completed_at": None}, TimeoutError("network"), "network_error"
+        ))
+
+    def test_failure_is_not_requeued_after_source_cleanup_receipt(self):
+        job = {"source_cleanup_completed_at": "2026-10-27T00:00:00Z"}
+        self.assertFalse(worker.is_retryable_job_error(job, TimeoutError("network"), "network_error"))
+        self.assertFalse(worker.is_retryable_job_error(job, RuntimeError("ffmpeg"), "ffmpeg_failed"))
+
 
 class DispatchedJobClaimTests(unittest.TestCase):
     def test_worker_claims_the_dispatched_job_instead_of_an_older_queued_job(self):
         job_id = "12345678-1234-5678-1234-567812345678"
         with patch.object(worker, "api") as api:
-            api.side_effect = [
-                [{"id": job_id, "status": "queued", "attempts": 0, "started_at": None}],
-                [{"id": job_id, "status": "processing", "attempts": 1}],
-            ]
+            api.return_value = [{"id": job_id, "status": "processing", "attempts": 1}]
             claimed = worker.claim_render_job(job_id)
 
         self.assertEqual(claimed["id"], job_id)
-        self.assertIn(f"id=eq.{job_id}", api.call_args_list[1].args[0])
-        self.assertIn("status=eq.queued", api.call_args_list[1].args[0])
-        self.assertEqual(api.call_args_list[1].args[1], "PATCH")
-        self.assertEqual(api.call_count, 2)
+        self.assertEqual(api.call_args.args[0], "/rest/v1/rpc/vyntra_claim_render_job")
+        self.assertEqual(api.call_args.args[2], {"p_worker_id": worker.WORKER_ID, "p_target_job_id": job_id})
+        self.assertEqual(api.call_count, 1)
 
     def test_worker_does_not_claim_an_unrelated_job_when_dispatched_job_is_missing(self):
         with patch.object(worker, "api", return_value=[]) as api:
             self.assertIsNone(worker.claim_render_job("12345678-1234-5678-1234-567812345678"))
         self.assertEqual(api.call_count, 1)
+
+
+class PrivateReleaseOutputTests(unittest.TestCase):
+    def test_private_release_upload_records_verifiable_asset_metadata(self):
+        job_id = "12345678-1234-5678-1234-567812345678"
+        job = {"id": job_id, "owner_id": "owner-123"}
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "render.mp4"
+            source.write_bytes(b"verified mp4 bytes")
+            with patch.object(worker, "RELEASE_TOKEN", "test-token"), \
+                 patch.object(worker, "_release_request") as release_request, \
+                 patch.object(worker, "_release_upload", return_value={"id": 55, "size": source.stat().st_size, "state": "uploaded"}) as upload, \
+                 patch.object(worker, "update_job") as update, \
+                 patch.object(worker, "api", return_value=[{"status": "finalizing"}]):
+                release_request.side_effect = [
+                    {"private": True},
+                    {"id": 44, "upload_url": "https://uploads.github.com/repos/fasmora-continue/here/releases/44/assets{?name,label}"},
+                    [],
+                ]
+                output_path, metadata = worker.upload_output_release(source, job, {"width": 1280}, Path(directory))
+
+        self.assertEqual(output_path, "github-release:44:55")
+        self.assertEqual(metadata["provider"], "github_release")
+        self.assertEqual(metadata["repository"], "fasmora-continue/here")
+        self.assertEqual(metadata["releaseId"], 44)
+        self.assertEqual(metadata["assetId"], 55)
+        self.assertEqual(metadata["bytes"], len(b"verified mp4 bytes"))
+        self.assertEqual(metadata["sha256"], worker.hashlib.sha256(b"verified mp4 bytes").hexdigest())
+        upload.assert_called_once()
+        update.assert_called_once()
+
+    def test_release_upload_refuses_a_public_or_missing_destination_repository(self):
+        job = {"id": "12345678-1234-5678-1234-567812345678", "owner_id": "owner-123"}
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "render.mp4"
+            source.write_bytes(b"mp4")
+            with patch.object(worker, "RELEASE_TOKEN", "test-token"), \
+                 patch.object(worker, "_release_request", return_value={"private": False}):
+                with self.assertRaisesRegex(RuntimeError, "github_release_repository_must_be_private"):
+                    worker.upload_output_release(source, job, {}, Path(directory))
+
+    def test_ack_cleanup_deletes_asset_release_tag_and_clears_metadata(self):
+        job = {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "output_metadata": {
+                "provider": "github_release", "repository": "fasmora-continue/here",
+                "releaseId": 44, "assetId": 55,
+                "releaseTag": "vyntra-render-12345678-1234-5678-1234-567812345678",
+            },
+        }
+        with patch.object(worker, "RELEASE_TOKEN", "test-token"), \
+             patch.object(worker, "_release_request", side_effect=[None, [], None, None]) as request, \
+             patch.object(worker, "update_job") as update:
+            self.assertTrue(worker.cleanup_release_output(job))
+        self.assertEqual(request.call_args_list[0].args[:2], ("/releases/assets/55", "DELETE"))
+        self.assertEqual(request.call_args_list[1].args[0], "/releases/44/assets")
+        self.assertEqual(request.call_args_list[2].args[:2], ("/releases/44", "DELETE"))
+        self.assertEqual(request.call_args_list[3].args[:2], ("/git/refs/tags/vyntra-render-12345678-1234-5678-1234-567812345678", "DELETE"))
+        update.assert_called_once_with(job["id"], output_path=None, output_metadata=None)
+
+
+class VerifiedSourceReceiptTests(unittest.TestCase):
+    def test_source_manifest_verifies_and_reassembles_chunks_in_order(self):
+        first, second = b"first source chunk", b"second source chunk"
+        manifest = {
+            "owner-123/source-0": {"bytes": len(first), "sha256": hashlib.sha256(first).hexdigest()},
+            "owner-123/source-1": {"bytes": len(second), "sha256": hashlib.sha256(second).hexdigest()},
+        }
+        parts = [
+            {"path": "owner-123/source-0", **manifest["owner-123/source-0"]},
+            {"path": "owner-123/source-1", **manifest["owner-123/source-1"]},
+        ]
+        verified = {}
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source.mp4"
+
+            def download(path, target):
+                target.write_bytes(first if path.endswith("source-0") else second)
+
+            with patch.object(worker, "storage_download", side_effect=download):
+                worker.download_source_asset(parts[0]["path"], parts, "owner-123", destination, manifest, verified)
+
+            self.assertEqual(destination.read_bytes(), first + second)
+        self.assertEqual(set(verified), set(manifest))
+        self.assertEqual(verified, {part["path"]: part for part in parts})
+
+    def test_bad_source_checksum_prevents_receipt_acknowledgement(self):
+        content = b"tampered"
+        expected = {"owner-123/source": {"bytes": len(content), "sha256": "0" * 64}}
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.mp4"
+            source.write_bytes(content)
+            with self.assertRaisesRegex(ValueError, "source_checksum_mismatch"):
+                worker._verify_source_file(source, "owner-123/source", None, None, expected, {})
+
+    def test_receipt_is_signed_for_job_and_ack_response_clears_local_source_paths(self):
+        content = b"verified input"
+        job_id = "12345678-1234-5678-1234-567812345678"
+        part = {"path": "owner-123/source", "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        manifest = {part["path"]: {"bytes": part["bytes"], "sha256": part["sha256"]}}
+        job = {"id": job_id, "source_object_paths": [part["path"]]}
+        with patch.object(worker.urllib.request, "urlopen") as urlopen:
+            response = urlopen.return_value.__enter__.return_value
+            response.read.return_value = b'{"acknowledged":true,"sourcesDeleted":true,"cleanedAt":"2026-10-27T00:00:00Z"}'
+            self.assertTrue(worker.acknowledge_source_receipt(job, manifest, {part["path"]: part}))
+
+        request = urlopen.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/functions/v1/vyntra-render-receipt"))
+        self.assertEqual(request.get_header("Authorization"), f"Bearer {worker.SERVICE_KEY}")
+        self.assertEqual(request.get_header("X-vyntra-receipt-signature"), worker.hmac.new(
+            worker.SERVICE_KEY.encode(),
+            (f"vyntra-source-receipt:v1:{job_id}:" + hashlib.sha256(json.dumps([part], separators=(",", ":")).encode()).hexdigest()).encode(),
+            hashlib.sha256,
+        ).hexdigest())
+        self.assertEqual(json.loads(request.data)["receivedParts"], [part])
+        self.assertEqual(job["source_object_paths"], [])
+
+    def test_receipt_requires_every_manifest_part(self):
+        job = {"id": "12345678-1234-5678-1234-567812345678", "source_object_paths": ["owner-123/a", "owner-123/b"]}
+        manifest = {
+            "owner-123/a": {"bytes": 1, "sha256": "a" * 64},
+            "owner-123/b": {"bytes": 1, "sha256": "b" * 64},
+        }
+        with self.assertRaisesRegex(ValueError, "source_receipt_manifest_incomplete"):
+            worker.acknowledge_source_receipt(job, manifest, {"owner-123/a": {"path": "owner-123/a"}})
 
 
 class CompletedSourceCleanupTests(unittest.TestCase):
